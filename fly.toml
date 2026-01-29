@@ -1,0 +1,19 @@
+app = "drink-bot"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  BOT_TOKEN = "your_bot_token_here"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+  
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
