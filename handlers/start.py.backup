@@ -1,0 +1,2451 @@
+from aiogram import Router, types, F, Bot
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import Command
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+import logging
+from datetime import datetime
+
+from database.models import db
+from locales import get_message
+
+router = Router()
+geolocator = Nominatim(user_agent="drink_bot")
+bot_instance = None  # Global bot instance for notifications
+
+def set_bot_instance(bot: Bot):
+    """Set global bot instance for notifications"""
+    global bot_instance
+    bot_instance = bot
+
+async def get_lang(user_id: int, state: FSMContext = None) -> str:
+    """Get user language from state first, then from database"""
+    try:
+        # First try to get from state
+        if state:
+            data = await state.get_data()
+            if 'language' in data:
+                return data['language']
+        
+        # Then try to get from database
+        return db.get_user_language(user_id)
+    except:
+        return 'ru'  # Fallback to Russian
+
+def get_user_language(user_id: int) -> str:
+    """Get user language from database (synchronous version)"""
+    try:
+        return db.get_user_language(user_id)
+    except:
+        return 'ru'  # Fallback to Russian
+
+def get_who_pays_text(who_pays: str, language: str = 'ru') -> str:
+    """Convert who_pays code to readable text"""
+    who_pays_map = {
+        "each_self": get_message("who_pays_each_self", language),
+        "i_treat": get_message("who_pays_i_treat", language), 
+        "someone_treats": get_message("who_pays_someone_treats", language)
+    }
+    return who_pays_map.get(who_pays, get_message("who_pays_each_self", language))
+
+class RegistrationStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_age = State()
+    waiting_for_city = State()
+    waiting_for_drink = State()
+    waiting_for_who_pays = State()
+    waiting_for_photo = State()
+
+class ProfileStates(StatesGroup):
+    name = State()
+    age = State()
+    city = State()
+    favorite_drink = State()
+    who_pays = State()
+    photo = State()
+
+class EventStates(StatesGroup):
+    event_name = State()
+    event_place = State()
+    event_price = State()
+    event_description = State()
+
+class CompanyStates(StatesGroup):
+    company_name = State()
+    company_description = State()
+    company_interests = State()
+    company_meeting_place = State()
+    company_max_members = State()
+
+class DatingCityStates(StatesGroup):
+    city_input = State()
+
+class EditProfileStates(StatesGroup):
+    edit_name = State()
+    edit_age = State()
+    edit_city = State()
+    edit_favorite_drink = State()
+    edit_photo = State()
+    edit_who_pays = State()
+
+class SeparateEditStates(StatesGroup):
+    edit_name = State()
+    edit_age = State()
+    edit_city = State()
+    edit_favorite_drink = State()
+    edit_photo = State()
+    edit_who_pays = State()
+
+class SwipeStates(StatesGroup):
+    swiping = State()
+
+# Main keyboard with sections
+def get_main_keyboard(language: str = 'ru') -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton(text=get_message("section_profile", language)),
+            KeyboardButton(text=get_message("section_dating", language))
+        ],
+        [
+            KeyboardButton(text=get_message("section_companies", language)),
+            KeyboardButton(text=get_message("section_events", language))
+        ],
+        [
+            KeyboardButton(text=get_message("btn_premium", language)),
+            KeyboardButton(text=get_message("section_settings", language))
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        input_field_placeholder=get_message("choose_action", language)
+    )
+
+# Section keyboards
+def get_profile_keyboard(language: str = 'ru') -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton(text=get_message("btn_fill_profile", language)),
+            KeyboardButton(text=get_message("btn_edit_profile", language))
+        ],
+        [
+            KeyboardButton(text=get_message("btn_delete_profile", language)),
+            KeyboardButton(text=get_message("btn_my_matches", language))
+        ],
+        [
+            KeyboardButton(text=get_message("back_to_main", language))
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        input_field_placeholder=get_message("choose_action", language)
+    )
+
+def get_edit_profile_keyboard(language: str = 'ru') -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton(text=get_message("btn_edit_name", language)),
+            KeyboardButton(text=get_message("btn_edit_age", language))
+        ],
+        [
+            KeyboardButton(text=get_message("btn_edit_city", language)),
+            KeyboardButton(text=get_message("btn_edit_drink", language))
+        ],
+        [
+            KeyboardButton(text=get_message("btn_edit_photo", language)),
+            KeyboardButton(text=get_message("btn_edit_who_pays", language))
+        ],
+        [
+            KeyboardButton(text=get_message("back_to_main", language))
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        input_field_placeholder=get_message("choose_action", language)
+    )
+
+def get_dating_keyboard(language: str = 'ru') -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton(text=get_message("btn_find_dating_my_city", language)),
+            KeyboardButton(text=get_message("btn_find_dating_other_city", language))
+        ],
+        [
+            KeyboardButton(text=get_message("btn_my_matches", language))
+        ],
+        [
+            KeyboardButton(text=get_message("back_to_main", language))
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        input_field_placeholder=get_message("choose_action", language)
+    )
+
+def get_companies_keyboard(language: str = 'ru') -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton(text=get_message("btn_create_company", language)),
+            KeyboardButton(text=get_message("btn_find_companies", language))
+        ],
+        [
+            KeyboardButton(text=get_message("btn_my_companies", language))
+        ],
+        [
+            KeyboardButton(text=get_message("back_to_main", language))
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        input_field_placeholder=get_message("choose_action", language)
+    )
+
+def get_events_keyboard(language: str = 'ru') -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton(text=get_message("btn_create_event", language)),
+            KeyboardButton(text=get_message("btn_view_events", language))
+        ],
+        [
+            KeyboardButton(text=get_message("btn_my_events", language))
+        ],
+        [
+            KeyboardButton(text=get_message("back_to_main", language))
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        input_field_placeholder=get_message("choose_action", language)
+    )
+
+def get_settings_keyboard(language: str = 'ru') -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton(text="🌐 Сменить язык / Change Language")
+        ],
+        [
+            KeyboardButton(text=get_message("back_to_main", language))
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        input_field_placeholder=get_message("choose_action", language)
+    )
+
+@router.message(F.text == "/start")
+async def cmd_start(message: types.Message, state: FSMContext):
+    """Handle /start command - don't reset if user is in registration"""
+    try:
+        user_id = message.from_user.id
+        logging.info(f"/start command from user {user_id}")
+        
+        # Check if user is currently in registration process
+        current_state = await state.get_state()
+        logging.info(f"Current state for {user_id}: {current_state}")
+        
+        if current_state and current_state.startswith("RegistrationStates:"):
+            logging.warning(f"User {user_id} is in registration ({current_state}), /start ignored")
+            # Send message to continue registration
+            lang = await get_lang(user_id, state)
+            await message.answer(
+                get_message("profile_name_prompt", lang),
+                reply_markup=types.ReplyKeyboardRemove(),
+                parse_mode='HTML'
+            )
+            return  # Don't interrupt registration
+        
+        user_profile = db.get_profile(user_id)
+        logging.info(f"User profile: {user_profile}")
+        
+        # Check if user exists and has language set
+        if not user_profile or not user_profile.get('language'):
+            # Show language selection
+            logging.info(f"Showing language selection for {user_id}")
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru")],
+                [InlineKeyboardButton(text="🇺🇦 Українська", callback_data="lang_ua")],
+                [InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")]
+            ])
+            await message.answer(
+                get_message("select_language"),
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+        else:
+            # User exists, show main menu
+            language = user_profile['language']
+            logging.info(f"User {user_id} exists with language: {language}")
+            await message.answer(
+                get_message("welcome", language),
+                reply_markup=get_main_keyboard(language),
+                parse_mode='HTML'
+            )
+            
+    except Exception as e:
+        logging.error(f"Error in /start handler: {e}")
+        await message.answer(get_message("error", 'ru'), parse_mode='HTML')
+
+@router.callback_query(F.data.startswith("lang_"))
+async def language_selection_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Handle language selection and save to state and DB"""
+    user_id = callback.from_user.id
+    lang_code = callback.data.split("_")[1]
+    
+    # Save to state
+    await state.update_data(language=lang_code)
+    
+    # Save to database
+    db.update_user_language(user_id, lang_code)
+    
+    # Get localized messages
+    language_name = {
+        'ru': '🇷🇺 Русский',
+        'ua': '🇺🇦 Українська',
+        'en': '🇬🇧 English'
+    }.get(lang_code, 'Русский')
+    
+    await callback.answer(f"Язык изменен на {language_name}")
+    await callback.message.answer(
+        f"✅ Язык изменен на {language_name}",
+        reply_markup=get_main_keyboard(lang_code),
+        parse_mode='HTML'
+    )
+    
+    # Clear state to avoid interference
+    await state.clear()
+
+# All state handlers should be defined BEFORE the general text handler
+
+async def show_language_selection(message: types.Message):
+    """Show language selection keyboard"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru")],
+        [InlineKeyboardButton(text="🇺🇦 Українська", callback_data="lang_ua")],
+        [InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")]
+    ])
+    await message.answer(
+        get_message("select_language"),
+        reply_markup=keyboard,
+        parse_mode='HTML'
+    )
+
+@router.message(F.text == "📝 Заполнить анкету")
+async def fill_profile_start(message: types.Message, state: FSMContext):
+    """Start profile filling process"""
+    # For new users, default to Russian until language is set
+    language = 'ru'
+    
+    # Check if profile already exists
+    existing_profile = db.get_profile(message.from_user.id)
+    if existing_profile and existing_profile.get('name'):  # Check if profile is actually filled
+        language = existing_profile.get('language', 'ru')
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_message("btn_update_profile", language), callback_data="update_profile")],
+            [InlineKeyboardButton(text=get_message("btn_cancel", language), callback_data="cancel_profile")]
+        ])
+        photo_text = f"\n📸 Фото: {'Есть' if existing_profile['photo_id'] else 'Нет'}" if existing_profile.get('photo_id') else ""
+        await message.answer(
+            get_message("profile_exists", language, 
+                     name=existing_profile['name'], 
+                     age=existing_profile['age'], 
+                     city=existing_profile['city'].title(),
+                     drink=existing_profile['favorite_drink'],
+                     photo=photo_text),
+            reply_markup=keyboard
+        )
+        return
+    
+    await message.answer(
+        get_message("profile_name_prompt", language),
+        reply_markup=types.ReplyKeyboardRemove(),
+        parse_mode='HTML'
+    )
+    await state.set_state(RegistrationStates.waiting_for_name)
+
+@router.message(RegistrationStates.waiting_for_name)
+async def process_name(message: types.Message, state: FSMContext):
+    """Process name input with correct sequence"""
+    try:
+        user_id = message.from_user.id
+        logging.info(f"process_name called for user {user_id}")
+        
+        # Get language from state first, then database
+        lang = await get_lang(user_id, state)
+        logging.info(f"Language for {user_id}: {lang}")
+        
+        # Validate input
+        if not message.text or not message.text.strip():
+            await message.answer(get_message("profile_name_error", lang), parse_mode='HTML')
+            return
+            
+        if len(message.text.strip()) < 2:
+            await message.answer(get_message("profile_name_error", lang), parse_mode='HTML')
+            return
+        
+        # Step 1: Save name to state
+        name = message.text.strip()
+        await state.update_data(name=name)
+        logging.info(f"Name '{name}' saved to state for {user_id}")
+        
+        # Step 2: Change state to waiting_for_age
+        await state.set_state(RegistrationStates.waiting_for_age)
+        logging.info(f"🔄 DEBUG: Перехожу к шагу ВОЗРАСТ для юзера {user_id}")
+        
+        # Step 3: Send age question using localized message
+        await message.answer(get_message("ask_age", lang), parse_mode='HTML')
+        logging.info(f"Age question sent to {user_id}")
+        
+    except Exception as e:
+        logging.error(f"Error in process_name: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("profile_name_error", lang), parse_mode='HTML')
+
+@router.message(RegistrationStates.waiting_for_age)
+async def process_age(message: types.Message, state: FSMContext):
+    """Process age input"""
+    try:
+        user_id = message.from_user.id
+        logging.info(f"🎂 process_age called for user {user_id}")
+        
+        # Get language from state first, then database
+        lang = await get_lang(user_id, state)
+        logging.info(f"🌍 Language for {user_id}: {lang}")
+        
+        # Validate input
+        if not message.text or not message.text.strip():
+            await message.answer(get_message("profile_age_invalid", lang), parse_mode='HTML')
+            return
+            
+        try:
+            age = int(message.text.strip())
+            if age < 18 or age > 100:
+                await message.answer(get_message("profile_age_error", lang), parse_mode='HTML')
+                return
+        except ValueError:
+            await message.answer(get_message("profile_age_invalid", lang), parse_mode='HTML')
+            return
+        
+        # Save age to state
+        await state.update_data(age=age)
+        logging.info(f"💾 Age '{age}' saved to state for {user_id}")
+        
+        # Change state to waiting_for_city
+        await state.set_state(RegistrationStates.waiting_for_city)
+        logging.info(f"🔄 DEBUG: Перехожу к шагу ГОРОД для юзера {user_id}")
+        
+        # Send city question
+        await message.answer(get_message("profile_city_prompt", lang), parse_mode='HTML')
+        logging.info(f"✅ City question sent to {user_id}")
+        
+    except Exception as e:
+        logging.error(f"❌ Error in process_age: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("profile_age_invalid", lang), parse_mode='HTML')
+
+@router.message(RegistrationStates.waiting_for_city)
+async def process_city(message: types.Message, state: FSMContext):
+    """Process city input with geopy validation"""
+    try:
+        user_id = message.from_user.id
+        logging.info(f"🏙️ process_city called for user {user_id}")
+        
+        # Get language from state first, then database
+        lang = await get_lang(user_id, state)
+        logging.info(f"🌍 Language for {user_id}: {lang}")
+        
+        # Validate input
+        if not message.text or not message.text.strip():
+            await message.answer(get_message("profile_city_error", lang), parse_mode='HTML')
+            return
+            
+        city_text = message.text.strip()
+        if len(city_text) < 2:
+            await message.answer(get_message("profile_city_error", lang), parse_mode='HTML')
+            return
+        
+        # Validate city with geopy (optional)
+        try:
+            location = geolocator.geocode(city_text, timeout=5)
+            if not location:
+                await message.answer(get_message("city_not_found", lang), parse_mode='HTML')
+                return
+        except (GeocoderTimedOut, GeocoderServiceError):
+            # If geopy fails, still accept the city
+            pass
+        
+        # Save city to state
+        city = city_text.lower()
+        await state.update_data(city=city)
+        logging.info(f"💾 City '{city}' saved to state for {user_id}")
+        
+        # Change state to waiting_for_drink
+        await state.set_state(RegistrationStates.waiting_for_drink)
+        logging.info(f"🔄 DEBUG: Перехожу к шагу НАПИТОК для юзера {user_id}")
+        
+        # Send drink question
+        await message.answer(get_message("profile_drink_prompt", lang), parse_mode='HTML')
+        logging.info(f"✅ Drink question sent to {user_id}")
+        
+    except Exception as e:
+        logging.error(f"❌ Error in process_city: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("profile_city_error", lang), parse_mode='HTML')
+
+@router.message(RegistrationStates.waiting_for_drink)
+async def process_favorite_drink(message: types.Message, state: FSMContext):
+    """Process favorite drink input and request who pays question"""
+    try:
+        # Get language from state first, then database
+        lang = await get_lang(message.from_user.id, state)
+        
+        # Validate input
+        if not message.text or not message.text.strip():
+            await message.answer(get_message("profile_drink_error", lang), parse_mode='HTML')
+            return
+            
+        if len(message.text.strip()) < 2:
+            await message.answer(get_message("profile_drink_error", lang), parse_mode='HTML')
+            return
+        
+        # Save drink to state
+        drink = message.text.strip()
+        await state.update_data(favorite_drink=drink)
+        
+        # Change state to waiting_for_who_pays
+        await state.set_state(RegistrationStates.waiting_for_who_pays)
+        
+        # Send who pays question with localized buttons
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_message("who_pays_each_self", lang), callback_data="who_pays_each_self")],
+            [InlineKeyboardButton(text=get_message("who_pays_i_treat", lang), callback_data="who_pays_i_treat")],
+            [InlineKeyboardButton(text=get_message("who_pays_someone_treats", lang), callback_data="who_pays_someone_treats")]
+        ])
+        await message.answer(
+            get_message("profile_who_pays_prompt", lang),
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        
+        logging.info(f"User {message.from_user.id} entered drink: {drink}")
+        
+    except Exception as e:
+        logging.error(f"Error in process_favorite_drink: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("profile_drink_error", lang), parse_mode='HTML')
+
+@router.callback_query(F.data.startswith("who_pays_"), RegistrationStates.waiting_for_who_pays)
+async def process_who_pays(callback: types.CallbackQuery, state: FSMContext):
+    """Process who pays selection and request photo"""
+    try:
+        # Get language from state first, then database
+        lang = await get_lang(callback.from_user.id, state)
+        
+        # Map callback data to values
+        who_pays_map = {
+            "who_pays_each_self": "each_self",
+            "who_pays_i_treat": "i_treat", 
+            "who_pays_someone_treats": "someone_treats"
+        }
+        
+        # Save who_pays to state
+        who_pays = who_pays_map[callback.data]
+        await state.update_data(who_pays=who_pays)
+        
+        # Change state to waiting_for_photo
+        await state.set_state(RegistrationStates.waiting_for_photo)
+        
+        # Send photo request
+        await callback.answer()
+        await callback.message.answer(
+            get_message("profile_photo_prompt", lang),
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode='HTML'
+        )
+        
+        logging.info(f"User {callback.from_user.id} selected who_pays: {who_pays}")
+        
+    except Exception as e:
+        logging.error(f"Error in process_who_pays: {e}")
+        lang = await get_lang(callback.from_user.id, state)
+        await callback.message.answer(get_message("use_buttons_error", lang), parse_mode='HTML')
+
+@router.message(RegistrationStates.waiting_for_photo, F.photo)
+async def process_photo(message: types.Message, state: FSMContext):
+    """Process photo and save complete profile"""
+    try:
+        user_data = await state.get_data()
+        
+        # Get the largest photo
+        photo = message.photo[-1]
+        photo_id = photo.file_id
+        
+        # Get language from state first, then database
+        lang = await get_lang(message.from_user.id, state)
+        
+        # Save profile to database with error handling
+        try:
+            success = db.create_profile(
+                user_id=message.from_user.id,
+                name=user_data['name'],
+                age=user_data['age'],
+                city=user_data['city'],
+                favorite_drink=user_data['favorite_drink'],
+                photo_id=photo_id,
+                who_pays=user_data['who_pays'],
+                language=lang  # Use user's actual language
+            )
+        except Exception as db_error:
+            logging.error(f"Database error saving profile: {db_error}")
+            await message.answer(get_message("profile_error", lang), parse_mode='HTML')
+            return
+        
+        # Clear state
+        await state.clear()
+        
+        # Send success message
+        if success:
+            await message.answer_photo(
+                photo=photo_id,
+                caption=get_message("profile_created", lang,
+                                 name=user_data['name'],
+                                 age=user_data['age'],
+                                 city=user_data['city'].title(),
+                                 drink=user_data['favorite_drink'],
+                                 who_pays=get_who_pays_text(user_data['who_pays'], lang)),
+                reply_markup=get_main_keyboard(lang)
+            )
+        else:
+            await message.answer(
+                get_message("profile_error", lang),
+                reply_markup=get_main_keyboard(lang)
+            )
+        
+        logging.info(f"User {message.from_user.id} completed registration with photo")
+        
+    except Exception as e:
+        logging.error(f"Error in process_photo: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("profile_photo_error", lang), parse_mode='HTML')
+
+@router.message(RegistrationStates.waiting_for_photo)
+async def process_photo_invalid(message: types.Message, state: FSMContext):
+    """Handle invalid input when photo is expected"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("profile_photo_error", lang), parse_mode='HTML')
+    except Exception as e:
+        logging.error(f"Error in process_photo_invalid: {e}")
+
+@router.message(RegistrationStates.waiting_for_who_pays)
+async def process_who_pays_invalid(message: types.Message, state: FSMContext):
+    """Handle invalid input when who pays selection is expected"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(
+            get_message("use_buttons_error", lang),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=get_message("who_pays_each_self", lang), callback_data="who_pays_each_self")],
+                [InlineKeyboardButton(text=get_message("who_pays_i_treat", lang), callback_data="who_pays_i_treat")],
+                [InlineKeyboardButton(text=get_message("who_pays_someone_treats", lang), callback_data="who_pays_someone_treats")]
+            ]),
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logging.error(f"Error in process_who_pays_invalid: {e}")
+
+async def show_next_profile(message: types.Message, state: FSMContext):
+    """Show next profile in swipe gallery with detailed logging"""
+    try:
+        user_id = message.from_user.id
+        lang = await get_lang(user_id, state)
+        
+        logging.info(f"DEBUG: Starting search for user {user_id}")
+        
+        user_profile = db.get_profile(user_id)
+        if not user_profile:
+            logging.error(f"DEBUG: User {user_id} has no profile")
+            await message.answer(
+                get_message("need_profile_first", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        # Check for city_normalized
+        user_city = user_profile.get('city')
+        user_city_normalized = user_profile.get('city_normalized')
+        
+        logging.info(f"DEBUG: User {user_id} city_display='{user_city}', city_normalized='{user_city_normalized}'")
+        
+        if not user_city_normalized:
+            logging.error(f"DEBUG: User {user_id} has no city_normalized, trying to normalize")
+            user_city_normalized = db.normalize_city(user_city or "")
+            # Update user profile with normalized city
+            db.update_user_city_normalized(user_id, user_city, user_city_normalized)
+            logging.info(f"DEBUG: Updated user {user_id} city_normalized to '{user_city_normalized}'")
+        
+        # Search for profiles using city_normalized
+        logging.info(f"DEBUG: Searching profiles in city_normalized='{user_city_normalized}' for user {user_id}")
+        profiles = db.find_profiles_for_swipe(user_id, city=user_city, limit=50)
+        
+        logging.info(f"DEBUG: Found {len(profiles)} profiles for user {user_id}")
+        
+        if not profiles:
+            logging.info(f"DEBUG: No profiles found for user {user_id} in city '{user_city_normalized}'")
+            await message.answer(
+                get_message("no_profiles_nearby", lang, city=user_city.title()),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        profile = profiles[current_index]
+        lang = await get_lang(message.from_user.id, state)
+        
+        profile_text = (
+            f"👤 <b>{profile['name']}, {profile['age']}</b>\n"
+            f"🏙️ {profile['city'].title()}\n"
+            f"🍺 {profile['favorite_drink']}"
+        )
+        
+        # Add photo if available
+        if profile.get('photo_id'):
+            await message.answer_photo(
+                photo=profile['photo_id'],
+                caption=profile_text,
+                reply_markup=get_swipe_keyboard(lang),
+                parse_mode='HTML'
+            )
+        else:
+            await message.answer(
+                get_message("no_photo", lang) + f"\n\n{profile_text}",
+                reply_markup=get_swipe_keyboard(lang),
+                parse_mode='HTML'
+            )
+        
+        # Update current index
+        await state.update_data(current_index=current_index + 1)
+        
+    except Exception as e:
+        logging.error(f"Error in find_companies_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+async def show_my_companies(message: types.Message):
+    """Show user's companies with member list"""
+    try:
+        lang = await get_lang(message.from_user.id)
+        companies = db.get_user_companies(message.from_user.id)
+        
+        if not companies:
+            await message.answer(
+                "Вы пока не участвуете ни в одной компании.\n"
+                "Создайте свою или присоединитесь к существующей!",
+                reply_markup=get_companies_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        await message.answer(f"Ваши компании ({len(companies)}):", parse_mode='HTML')
+        
+        for company in companies:
+            # Get company members with usernames
+            members = db.get_company_members_with_usernames(company['id'])
+            
+            # Create member list text
+            member_list = []
+            for member in members:
+                if member['username']:
+                    member_list.append(f"{member['name']} - @{member['username']}")
+                else:
+                    member_list.append(f"{member['name']} - (нет юзернейма)")
+            
+            members_text = "\n".join(member_list) if member_list else "Пока нет участников"
+            
+            company_text = (
+                f"<b>{company['name']}</b>\n"
+                f"Создатель: {company['creator_name']}\n"
+                f"{company['description']}\n"
+                f"Интересы: {company['interests']}\n"
+                f"Место встреч: {company['meeting_place']}\n"
+                f"Участников: {company['current_members']}/{company['max_members']}\n\n"
+                f"<b>Участники:</b>\n{members_text}"
+            )
+            
+            await message.answer(company_text, parse_mode='HTML')
+        
+    except Exception as e:
+        logging.error(f"Error in show_my_companies: {e}")
+        lang = await get_lang(message.from_user.id)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.callback_query(F.data.startswith("join_company_"))
+async def join_company_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Handle joining a company"""
+    try:
+        company_id = int(callback.data.split("_")[2])
+        user_id = callback.from_user.id
+        
+        success = db.join_company(company_id, user_id)
+        
+        if success:
+            await callback.answer("Вы присоединились к компании!")
+            await callback.message.answer(
+                "Вы присоединились к компании!",
+                reply_markup=get_companies_keyboard(get_user_language(user_id)),
+                parse_mode='HTML'
+            )
+            logging.info(f"DEBUG: User {user_id} successfully joined company {company_id}")
+        else:
+            await callback.answer("Вы уже участвуете в этой компании")
+            
+    except Exception as e:
+        logging.error(f"Error in join_company_callback: {e}")
+        await callback.answer("Ошибка при присоединении к компании")
+
+@router.callback_query(F.data.startswith("leave_company_"))
+async def leave_company_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Handle leaving a company"""
+    try:
+        company_id = int(callback.data.split("_")[2])
+        user_id = callback.from_user.id
+        
+        success = db.leave_company(company_id, user_id)
+        
+        if success:
+            await callback.answer("Вы покинули компанию")
+            await callback.message.answer(
+                "Вы покинули компанию",
+                reply_markup=get_companies_keyboard(get_user_language(user_id)),
+                parse_mode='HTML'
+            )
+            logging.info(f"DEBUG: User {user_id} successfully left company {company_id}")
+        else:
+            await callback.answer("Вы не участвуете в этой компании")
+            
+    except Exception as e:
+        logging.error(f"Error in leave_company_callback: {e}")
+        await callback.answer("Ошибка при выходе из компании")
+
+async def find_company_start(message: types.Message, state: FSMContext):
+    """Start swipe gallery for finding company with detailed logging"""
+    try:
+        user_id = message.from_user.id
+        lang = await get_lang(user_id, state)
+        
+        logging.info(f"DEBUG: find_company_start called for user {user_id}")
+        
+        user_profile = db.get_profile(user_id)
+        if not user_profile:
+            logging.error(f"DEBUG: User {user_id} has no profile in find_company_start")
+            await message.answer(
+                get_message("need_profile_first", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        logging.info(f"DEBUG: User {user_id} profile found: city='{user_profile.get('city')}', city_normalized='{user_profile.get('city_normalized')}'")
+        
+        if not user_profile.get('photo_id'):
+            logging.warning(f"DEBUG: User {user_id} has no photo")
+            await message.answer(
+                get_message("need_photo_first", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        await state.set_state(SwipeStates.swiping)
+        logging.info(f"DEBUG: State set to swiping for user {user_id}")
+        await show_next_profile(message, state)
+        
+    except Exception as e:
+        logging.error(f"DEBUG: Real error in find_company_start for user {message.from_user.id}: {e}")
+        import traceback
+        logging.error(f"DEBUG: Traceback: {traceback.format_exc()}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(
+            f"Search start error: {str(e)}",
+            reply_markup=get_main_keyboard(lang),
+            parse_mode='HTML'
+        )
+
+@router.callback_query(F.data.in_(["like", "dislike"]), SwipeStates.swiping)
+async def handle_swipe_action(callback: types.CallbackQuery, state: FSMContext):
+    """Handle like/dislike actions with notification system"""
+    try:
+        await callback.answer()
+        
+        data = await state.get_data()
+        current_profile = data.get('current_profile')
+        remaining_profiles = data.get('remaining_profiles', [])
+        
+        if not current_profile:
+            lang = await get_lang(callback.from_user.id, state)
+            await callback.message.answer(
+                get_message("error", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            await state.clear()
+            return
+        
+        # Handle like action
+        if callback.data == "like":
+            from_user_id = callback.from_user.id
+            to_user_id = current_profile['user_id']
+            
+            logging.info(f"DEBUG: User {from_user_id} liked user {to_user_id}")
+            
+            # Add like to database
+            like_added = db.add_like(from_user_id, to_user_id)
+            
+            if like_added:
+                # Check for mutual like
+                is_mutual = db.check_mutual_like(from_user_id, to_user_id)
+                
+                if is_mutual:
+                    # MATCH! Send notifications to both users
+                    await send_match_notifications(from_user_id, to_user_id)
+                else:
+                    # One-sided like - send notification to the other user
+                    await send_like_notification(from_user_id, to_user_id, current_profile)
+        
+        # Show next profile or finish
+        if remaining_profiles:
+            await state.update_data(current_profile=remaining_profiles[0], remaining_profiles=remaining_profiles[1:])
+            
+            profile = remaining_profiles[0]
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="❤️", callback_data="like"),
+                    InlineKeyboardButton(text="👎", callback_data="dislike")
+                ]
+            ])
+            
+            caption = (
+                f"👤 {profile['name']}, {profile['age']}\n"
+                f"🏙️ {profile['city'].title()}\n"
+                f"🍺 {profile['favorite_drink']}"
+            )
+            
+            lang = await get_lang(callback.from_user.id, state)
+            if profile.get('photo_id'):
+                await callback.message.answer_photo(
+                    photo=profile['photo_id'],
+                    caption=caption,
+                    reply_markup=keyboard
+                )
+            else:
+                await callback.message.answer(
+                    get_message("no_photo", lang) + f"\n\n{caption}",
+                    reply_markup=keyboard,
+                    parse_mode='HTML'
+                )
+        else:
+            # No more profiles
+            lang = await get_lang(callback.from_user.id, state)
+            await callback.message.answer(
+                "🎉 Все анкеты просмотрены!",
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            await state.clear()
+            
+    except Exception as e:
+        logging.error(f"DEBUG: Real error in handle_swipe_action for user {callback.from_user.id}: {e}")
+        import traceback
+        logging.error(f"DEBUG: Traceback: {traceback.format_exc()}")
+        lang = await get_lang(callback.from_user.id, state)
+        await callback.message.answer(
+            f"Swipe error: {str(e)}",
+            reply_markup=get_main_keyboard(lang),
+            parse_mode='HTML'
+        )
+
+async def send_like_notification(from_user_id: int, to_user_id: int, from_profile: dict):
+    """Send notification to user who was liked"""
+    try:
+        if not bot_instance:
+            logging.error("Bot instance not available for notifications")
+            return
+            
+        to_user_lang = db.get_user_language(to_user_id)
+        
+        # Create "View profile" button
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=get_message("view_profile", to_user_lang),
+                callback_data=f"view_like_profile_{from_user_id}"
+            )]
+        ])
+        
+        # Send notification
+        await bot_instance.send_message(
+            to_user_id,
+            get_message("someone_liked_you", to_user_lang),
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        
+        logging.info(f"Like notification sent: {from_user_id} -> {to_user_id}")
+        
+    except Exception as e:
+        logging.error(f"Error sending like notification: {e}")
+
+async def send_match_notifications(user1_id: int, user2_id: int):
+    """Send match notifications to both users with block handling"""
+    try:
+        if not bot_instance:
+            logging.error("ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Bot instance not available")
+            return
+            
+        # Get profiles and languages
+        profile1 = db.get_profile(user1_id)
+        profile2 = db.get_profile(user2_id)
+        
+        if not profile1 or not profile2:
+            logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Missing profile data - user1={bool(profile1)}, user2={bool(profile2)}")
+            return
+        
+        lang1 = profile1.get('language', 'ru')
+        lang2 = profile2.get('language', 'ru')
+        
+        # Get icebreaker
+        icebreaker = db.get_icebreaker()
+        
+        # Create user links
+        user1_link = create_user_link(profile1)
+        user2_link = create_user_link(profile2)
+        
+        # Send to user1
+        match_message1 = (
+            f"{get_message('mutual_like', lang1)}\n\n"
+            f"👤 {profile2['name']}, {profile2['age']}\n"
+            f"🏙️ {profile2['city'].title()}\n"
+            f"🍺 {profile2['favorite_drink']}\n\n"
+            f"{get_message('write_to_user', lang1, username=profile2.get('username', user2_link))}\n\n"
+            f"{get_message('conversation_starter', lang1)} {icebreaker}"
+        )
+        
+        # Send to user2
+        match_message2 = (
+            f"{get_message('mutual_like', lang2)}\n\n"
+            f"👤 {profile1['name']}, {profile1['age']}\n"
+            f"🏙️ {profile1['city'].title()}\n"
+            f"🍺 {profile1['favorite_drink']}\n\n"
+            f"{get_message('write_to_user', lang2, username=profile1.get('username', user1_link))}\n\n"
+            f"{get_message('conversation_starter', lang2)} {icebreaker}"
+        )
+        
+        # Send notifications with block handling
+        notifications_sent = []
+        
+        try:
+            await bot_instance.send_message(
+                user1_id,
+                match_message1,
+                reply_markup=get_main_keyboard(lang1),
+                parse_mode='HTML'
+            )
+            notifications_sent.append(f"user1:{user1_id}")
+            logging.info(f"DEBUG: Match notification sent to user1:{user1_id}")
+        except Exception as e:
+            logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Не удалось отправить user1:{user1_id} - {e}")
+            if "blocked" in str(e).lower() or "chat not found" in str(e).lower():
+                logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Пользователь user1:{user1_id} заблокировал бота")
+            else:
+                logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Другая ошибка для user1:{user1_id} - {e}")
+        
+        try:
+            await bot_instance.send_message(
+                user2_id,
+                match_message2,
+                reply_markup=get_main_keyboard(lang2),
+                parse_mode='HTML'
+            )
+            notifications_sent.append(f"user2:{user2_id}")
+            logging.info(f"DEBUG: Match notification sent to user2:{user2_id}")
+        except Exception as e:
+            logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Не удалось отправить user2:{user2_id} - {e}")
+            if "blocked" in str(e).lower() or "chat not found" in str(e).lower():
+                logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Пользователь user2:{user2_id} заблокировал бота")
+            else:
+                logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Другая ошибка для user2:{user2_id} - {e}")
+        
+        # Log final result
+        if notifications_sent:
+            logging.info(f"DEBUG: Match notifications sent successfully: {user1_id} <-> {user2_id} | Sent: {', '.join(notifications_sent)}")
+        else:
+            logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Не удалось отправить ни одно уведомление для мэтча {user1_id} <-> {user2_id}")
+        
+    except Exception as e:
+        logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Критическая ошибка для мэтча {user1_id} <-> {user2_id}: {e}")
+        import traceback
+        logging.error(f"ОШИБКА В ШАГЕ SEND_MATCH_NOTIFICATIONS: Traceback: {traceback.format_exc()}")
+
+def create_user_link(profile: dict) -> str:
+    """Create secure user link (username or HTML tg://user?id= link)"""
+    username = profile.get('username')
+    if username:
+        return f"@{username}"
+    else:
+        return f'<a href="tg://user?id={profile["user_id"]}">Перейти в профиль</a>'
+
+@router.callback_query(F.data.startswith("view_like_profile_"))
+async def view_like_profile_callback(callback: types.CallbackQuery):
+    """Handle viewing profile of user who liked you"""
+    try:
+        from_user_id = int(callback.data.split("_")[3])
+        from_profile = db.get_profile(from_user_id)
+        
+        if not from_profile:
+            await callback.answer("Profile not found")
+            return
+        
+        user_lang = db.get_user_language(callback.from_user.id)
+        
+        # Create profile caption
+        caption = (
+            f"👤 {from_profile['name']}, {from_profile['age']}\n"
+            f"🏙️ {from_profile['city'].title()}\n"
+            f"🍺 {from_profile['favorite_drink']}"
+        )
+        
+        # Create like button
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❤️", callback_data=f"like_back_{from_user_id}")]
+        ])
+        
+        if from_profile.get('photo_id'):
+            await callback.message.answer_photo(
+                photo=from_profile['photo_id'],
+                caption=caption,
+                reply_markup=keyboard
+            )
+        else:
+            await callback.message.answer(
+                get_message("no_photo", user_lang) + f"\n\n{caption}",
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logging.error(f"Error in view_like_profile_callback: {e}")
+        await callback.answer("Error loading profile")
+
+@router.callback_query(F.data.startswith("like_back_"))
+async def like_back_callback(callback: types.CallbackQuery):
+    """Handle liking back from notification"""
+    try:
+        from_user_id = int(callback.data.split("_")[2])
+        to_user_id = callback.from_user.id
+        
+        # Add like
+        db.add_like(to_user_id, from_user_id)
+        
+        # Check for mutual like (should be true now)
+        if db.check_mutual_like(to_user_id, from_user_id):
+            await send_match_notifications(to_user_id, from_user_id)
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logging.error(f"Error in like_back_callback: {e}")
+        await callback.answer("Error")
+
+async def show_premium(message: types.Message):
+    pass
+
+async def process_event_name(message: types.Message, state: FSMContext):
+    """Process event name input"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        
+        if not message.text or not message.text.strip():
+            await message.answer(get_message("event_name_error", lang), parse_mode='HTML')
+            return
+            
+        if len(message.text.strip()) < 2:
+            await message.answer(get_message("event_name_error", lang), parse_mode='HTML')
+            return
+        
+        await state.update_data(event_name=message.text.strip())
+        await state.set_state(EventStates.event_place)
+        await message.answer(get_message("event_place_prompt", lang), parse_mode='HTML')
+        
+    except Exception as e:
+        logging.error(f"Error in process_event_name: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("event_name_error", lang), parse_mode='HTML')
+
+@router.message(EventStates.event_place)
+async def process_event_place(message: types.Message, state: FSMContext):
+    """Process event place input"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        
+        if not message.text or not message.text.strip():
+            await message.answer(get_message("event_place_error", lang), parse_mode='HTML')
+            return
+        
+        await state.update_data(event_place=message.text.strip())
+        await state.set_state(EventStates.event_price)
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_message("price_free", lang), callback_data="price_free")],
+            [InlineKeyboardButton(text=get_message("price_paid", lang), callback_data="price_paid")]
+        ])
+        await message.answer(get_message("event_price_prompt", lang), reply_markup=keyboard, parse_mode='HTML')
+        
+    except Exception as e:
+        logging.error(f"Error in process_event_place: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("event_place_error", lang), parse_mode='HTML')
+
+@router.callback_query(F.data.startswith("price_"), EventStates.event_price)
+async def process_event_price(callback: types.CallbackQuery, state: FSMContext):
+    """Process event price selection"""
+    try:
+        lang = await get_lang(callback.from_user.id, state)
+        price_type = callback.data.split("_")[1]
+        
+        await state.update_data(event_price=price_type)
+        await state.set_state(EventStates.event_description)
+        await callback.answer()
+        await callback.message.answer(get_message("event_description_prompt", lang), parse_mode='HTML')
+        
+    except Exception as e:
+        logging.error(f"Error in process_event_price: {e}")
+        lang = await get_lang(callback.from_user.id, state)
+        await callback.message.answer(get_message("use_buttons_error", lang), parse_mode='HTML')
+
+@router.message(EventStates.event_description)
+async def process_event_description(message: types.Message, state: FSMContext):
+    """Process event description and create event"""
+    try:
+        user_id = message.from_user.id
+        lang = await get_lang(user_id, state)
+        
+        if not message.text or not message.text.strip():
+            await message.answer(get_message("event_description_error", lang), parse_mode='HTML')
+            return
+        
+        user_data = await state.get_data()
+        user_profile = db.get_profile(user_id)
+        
+        success = db.create_event(
+            creator_id=user_id,
+            name=user_data['event_name'],
+            place=user_data['event_place'],
+            price_type=user_data['event_price'],
+            description=message.text.strip(),
+            city=user_profile['city']
+        )
+        
+        await state.clear()
+        
+        if success:
+            await message.answer(
+                get_message("event_created", lang,
+                         name=user_data['event_name'],
+                         place=user_data['event_place'],
+                         price=get_message(f"price_{user_data['event_price']}", lang),
+                         creator=user_profile['name'],
+                         description=message.text.strip()[:100] + "...",
+                         city=user_profile['city'].title()),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+        else:
+            await message.answer(
+                get_message("event_error", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+        
+    except Exception as e:
+        logging.error(f"Error in process_event_description: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("event_error", lang), parse_mode='HTML')
+
+async def create_event_start(message: types.Message, state: FSMContext):
+    """Start event creation process"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        user_profile = db.get_profile(message.from_user.id)
+        
+        if not user_profile:
+            await message.answer(
+                get_message("need_profile_first", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        await message.answer(
+            get_message("create_event_start", lang),
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode='HTML'
+        )
+        await state.set_state(EventStates.event_name)
+        
+    except Exception as e:
+        logging.error(f"Error in create_event_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+async def show_events_feed(message: types.Message):
+    """Show events in user's city using city_normalized"""
+    try:
+        user_id = message.from_user.id
+        lang = await get_lang(user_id)
+        user_profile = db.get_profile(user_id)
+        
+        if not user_profile:
+            await message.answer(
+                get_message("need_profile_first", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        # Get user's city_normalized
+        user_city = user_profile.get('city')
+        user_city_normalized = user_profile.get('city_normalized')
+        
+        # Get events from user city and nearby cities
+        events = db.get_events_by_city_nearby(user_profile['city'], limit=10)
+        
+        if not events:
+            await message.answer(
+                get_message("no_events_in_city", lang, city=user_profile['city'].title()),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        await message.answer(
+            f"📅 Тусовки в {user_profile['city'].title()} и рядом:",
+            parse_mode='HTML'
+        )
+        
+        for event in events:
+            price_text = get_message("price_free" if event['price_type'] == 'free' else "price_paid", lang)
+            is_participating = db.is_user_participating(event['id'], user_id)
+            button_text = get_message("leave_event", lang) if is_participating else get_message("join_event", lang)
+            button_callback = f"leave_event_{event['id']}" if is_participating else f"join_event_{event['id']}"
+            
+            # Calculate time remaining
+            time_remaining = db.get_time_remaining(event['expires_at'])
+            is_expired = time_remaining == "00:00"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=button_text, callback_data=button_callback)]
+            ])
+            
+            # Create event text with time remaining and city info
+            status_text = get_message("event_expired", lang) if is_expired else get_message("time_remaining", lang, time=time_remaining)
+            city_info = f"🏙️ {event['city'].title()}" if event['city'] != user_profile['city'] else ""
+            
+            event_text = (
+                f"📅 <b>{event['name']}</b>\n"
+                f"📍 {event['place']}\n"
+                f"💰 {price_text}\n"
+                f"📝 {event['description']}\n"
+                f"👤 Создатель: {event['creator_name']}\n"
+                f"👥 Участников: {event.get('current_members', 0)}\n"
+                f"{city_info}\n"
+                f"{status_text}"
+            )
+            
+            await message.answer(
+                event_text,
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+        
+    except Exception as e:
+        logging.error(f"Error in show_events_feed: {e}")
+        import traceback
+        logging.error(f"DEBUG: Traceback: {traceback.format_exc()}")
+        lang = await get_lang(message.from_user.id)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+        
+        await message.answer(
+            get_message("matches_message", lang),
+            reply_markup=get_main_keyboard(lang),
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in show_matches: {e}")
+        lang = await get_lang(message.from_user.id)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.callback_query(F.data.startswith("matches_prev_"))
+async def matches_prev_callback(callback: types.CallbackQuery):
+    """Handle previous matches page"""
+    try:
+        offset = int(callback.data.split("_")[2])
+        await callback.answer()
+        await show_matches(callback.message, offset - 5)
+    except Exception as e:
+        logging.error(f"Error in matches_prev_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+@router.callback_query(F.data.startswith("matches_next_"))
+async def matches_next_callback(callback: types.CallbackQuery):
+    """Handle next matches page"""
+    try:
+        offset = int(callback.data.split("_")[2])
+        await callback.answer()
+        await show_matches(callback.message, offset + 5)
+    except Exception as e:
+        logging.error(f"Error in matches_next_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+async def show_matches(message: types.Message, offset: int = 0):
+    """Show user's matches with pagination and usernames"""
+    try:
+        lang = await get_lang(message.from_user.id)
+        matches = db.get_user_matches(message.from_user.id, limit=5, offset=offset)
+        
+        if not matches and offset == 0:
+            await message.answer(
+                get_message("no_matches", lang),
+                reply_markup=get_dating_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        if not matches and offset > 0:
+            await message.answer(
+                "Больше нет метчей",
+                reply_markup=get_dating_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        await message.answer(f"💕 Ваши метчи (показано {offset + 1}-{offset + len(matches)}):", parse_mode='HTML')
+        
+        for match in matches:
+            caption = (
+                f"👤 {match['name']}, {match['age']} лет\n"
+                f"🏙️ {match['city'].title()}\n"
+                f"🍺 Любимый напиток: {match['favorite_drink']}\n"
+                f"🔗 @{match.get('username', 'нет юзернейма')}"
+            )
+            
+            if match.get('photo_id'):
+                await message.answer_photo(
+                    photo=match['photo_id'],
+                    caption=caption
+                )
+            else:
+                await message.answer(
+                    get_message("no_photo", lang) + f"\n\n{caption}",
+                    parse_mode='HTML'
+                )
+            
+            await message.answer(get_message("photo_separator", lang))
+        
+        # Add pagination buttons
+        keyboard_buttons = []
+        
+        # Previous button
+        if offset > 0:
+            keyboard_buttons.append(
+                InlineKeyboardButton(text="⬅️ Назад", callback_data=f"matches_prev_{offset - 5}")
+            )
+        
+        # Next button
+        if len(matches) == 5:  # Might be more matches
+            keyboard_buttons.append(
+                InlineKeyboardButton(text="➡️ Далее", callback_data=f"matches_next_{offset + 5}")
+            )
+        
+        if keyboard_buttons:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
+            await message.answer("Навигация:", reply_markup=keyboard)
+        
+    except Exception as e:
+        logging.error(f"Error in show_matches: {e}")
+        lang = await get_lang(message.from_user.id)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+# GENERAL TEXT HANDLER - MUST BE LAST TO CATCH ONLY UNHANDLED TEXT MESSAGES
+@router.message(F.text)
+async def handle_main_menu(message: types.Message, state: FSMContext):
+    """Handle main menu button clicks using section navigation"""
+    try:
+        logging.info(f"handle_main_menu called with text: '{message.text}' from user {message.from_user.id}")
+        
+        # Get user language properly
+        user_profile = db.get_profile(message.from_user.id)
+        if user_profile and user_profile.get('language'):
+            language = user_profile['language']
+            logging.info(f"Using language from profile: {language}")
+        else:
+            language = 'ru'
+            logging.info(f"Using default language: {language}")
+        
+        # Get all section texts for current language
+        section_profile_text = get_message("section_profile", language)
+        section_dating_text = get_message("section_dating", language)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=get_message("price_free", language), callback_data="price_free")],
+        [InlineKeyboardButton(text=get_message("price_paid", language), callback_data="price_paid")]
+    ])
+    await message.answer(
+        get_message("event_price_prompt", language),
+        reply_markup=keyboard
+    )
+    await state.set_state(EventStates.event_price)
+
+@router.callback_query(F.data.startswith("price_"), EventStates.event_price)
+async def process_event_price(callback: types.CallbackQuery, state: FSMContext):
+    """Process event price selection"""
+    language = get_user_language(callback.from_user.id)
+    price_map = {
+        "price_free": "free",
+        "price_paid": "paid"
+    }
+    
+    price_type = price_map[callback.data]
+    await state.update_data(event_price=price_type)
+    
+    await callback.answer()
+    await callback.message.answer(
+        get_message("event_description_prompt", language),
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    await state.set_state(EventStates.event_description)
+
+@router.message(EventStates.event_description)
+async def process_event_description(message: types.Message, state: FSMContext):
+    """Process event description and save event"""
+    language = get_user_language(message.from_user.id)
+    
+    if not message.text or not message.text.strip():
+        await message.answer(get_message("event_description_error", language))
+        return
+        
+    if len(message.text.strip()) < 10:
+        await message.answer(get_message("event_description_error", language))
+        return
+    
+    user_data = await state.get_data()
+    user_profile = db.get_profile(message.from_user.id)
+    
+    # Save event to database
+    success = db.create_event(
+        creator_id=message.from_user.id,
+        name=user_data['event_name'],
+        place=user_data['event_place'],
+        price_type=user_data['event_price'],
+        description=message.text.strip(),
+        city=user_profile['city']
+    )
+    
+    if success:
+        price_text = get_message("price_free" if user_data['event_price'] == 'free' else "price_paid", language)
+        await message.answer(
+            get_message("event_created", language,
+                     name=user_data['event_name'],
+                     place=user_data['event_place'],
+                     price=price_text,
+                     city=user_profile['city'].title(),
+                     description=message.text.strip()),
+            reply_markup=get_main_keyboard(language)
+        )
+    else:
+        await message.answer(
+            get_message("event_error", language),
+            reply_markup=get_main_keyboard(language)
+        )
+    
+    await state.clear()
+
+@router.callback_query(F.data == "buy_premium")
+async def buy_premium_callback(callback: types.CallbackQuery):
+    """Handle premium purchase (placeholder)"""
+    language = get_user_language(callback.from_user.id)
+    await callback.answer()
+    await callback.message.answer(
+        get_message("premium_in_development", language),
+        reply_markup=get_main_keyboard(language)
+    )
+
+@router.callback_query(F.data.startswith("join_event_"))
+async def join_event_callback(callback: types.CallbackQuery):
+    """Handle joining an event"""
+    try:
+        language = get_user_language(callback.from_user.id)
+        event_id = int(callback.data.split("_")[2])
+        
+        logging.info(f"DEBUG: User {callback.from_user.id} trying to join event {event_id}")
+        
+        # Check if already participating
+        if db.is_user_participating(event_id, callback.from_user.id):
+            await callback.answer("❌ Вы уже участвуете в этом событии")
+            return
+        
+        success = db.join_event(event_id, callback.from_user.id)
+        
+        if success:
+            # Get event details
+            event = db.get_event_by_id(event_id)
+            participants = db.get_event_participants(event_id)
+            
+            # Get creator profile for username
+            creator_profile = db.get_profile(event['creator_id'])
+            creator_username = f"@{creator_profile.get('username', '')}" if creator_profile.get('username') else "нет юзернейма"
+            creator_name = creator_profile.get('name', 'Неизвестно')
+            
+            await callback.answer("✅ Вы присоединились к событию!")
+            
+            # Create success message with creator info
+            success_message = get_message("event_joined_success", language, 
+                count=len(participants) + 1,
+                creator_name=creator_name,
+                username=creator_username)
+            
+            await callback.message.answer(
+                success_message,
+                reply_markup=get_events_keyboard(language),
+                parse_mode='HTML'
+            )
+            
+            logging.info(f"DEBUG: User {callback.from_user.id} successfully joined event {event_id}")
+        else:
+            await callback.answer("❌ Не удалось присоединиться к событию")
+            
+    except Exception as e:
+        logging.error(f"Error in join_event_callback: {e}")
+        await callback.answer("❌ Ошибка при присоединении к событию")
+
+# ... (rest of the code remains the same)
+@router.callback_query(F.data.startswith("leave_event_"))
+async def leave_event_callback(callback: types.CallbackQuery):
+    """Handle leaving an event"""
+    try:
+        language = get_user_language(callback.from_user.id)
+        event_id = int(callback.data.split("_")[2])
+        
+        logging.info(f"DEBUG: User {callback.from_user.id} trying to leave event {event_id}")
+        
+        success = db.leave_event(event_id, callback.from_user.id)
+        
+        if success:
+            await callback.answer("🚪 Вы покинули событие")
+            await callback.message.answer(
+                "🚪 Вы покинули событие",
+                reply_markup=get_main_keyboard(language),
+                parse_mode='HTML'
+            )
+            
+            logging.info(f"DEBUG: User {callback.from_user.id} successfully left event {event_id}")
+        else:
+            await callback.answer("❌ Вы не участвуете в этом событии")
+            
+    except Exception as e:
+        logging.error(f"Error in leave_event_callback: {e}")
+        await callback.answer("❌ Ошибка при выходе из события")
+
+# GENERAL TEXT HANDLER - MUST BE LAST TO CATCH ONLY UNHANDLED TEXT MESSAGES
+@router.message(F.text)
+async def handle_main_menu(message: types.Message, state: FSMContext):
+    """Handle main menu button clicks using section navigation"""
+    try:
+        logging.info(f"handle_main_menu called with text: '{message.text}' from user {message.from_user.id}")
+        
+        # Get user language properly
+        user_profile = db.get_profile(message.from_user.id)
+        if user_profile and user_profile.get('language'):
+            language = user_profile['language']
+            logging.info(f"Using language from profile: {language}")
+        else:
+            language = 'ru'
+            logging.info(f"Using default language: {language}")
+        
+        # Get all section texts for current language
+        section_profile_text = get_message("section_profile", language)
+        section_dating_text = get_message("section_dating", language)
+        section_companies_text = get_message("section_companies", language)
+        section_events_text = get_message("section_events", language)
+        section_settings_text = get_message("section_settings", language)
+        back_to_main_text = get_message("back_to_main", language)
+        
+        # Get all button texts for current language
+        fill_profile_text = get_message("btn_fill_profile", language)
+        edit_profile_text = get_message("btn_edit_profile", language)
+        delete_profile_text = get_message("btn_delete_profile", language)
+        find_company_text = get_message("btn_find_company", language)
+        find_dating_my_city_text = get_message("btn_find_dating_my_city", language)
+        find_dating_other_city_text = get_message("btn_find_dating_other_city", language)
+        my_matches_text = get_message("btn_my_matches", language)
+        create_event_text = get_message("btn_create_event", language)
+        view_events_text = get_message("btn_view_events", language)
+        my_events_text = get_message("btn_my_events", language)
+        premium_text = get_message("btn_premium", language)
+        create_company_text = get_message("btn_create_company", language)
+        find_companies_text = get_message("btn_find_companies", language)
+        my_companies_text = get_message("btn_my_companies", language)
+        change_lang_text = "🌐 Сменить язык / Change Language"
+        
+        # Edit profile buttons
+        btn_edit_name_text = get_message("btn_edit_name", language)
+        btn_edit_age_text = get_message("btn_edit_age", language)
+        btn_edit_city_text = get_message("btn_edit_city", language)
+        btn_edit_drink_text = get_message("btn_edit_drink", language)
+        btn_edit_photo_text = get_message("btn_edit_photo", language)
+        btn_edit_who_pays_text = get_message("btn_edit_who_pays", language)
+        
+        logging.info(f"Button texts for language {language}: section_profile='{section_profile_text}'")
+        
+        # Handle section navigation
+        if message.text == section_profile_text:
+            await message.answer(
+                get_message("welcome", language),
+                reply_markup=get_profile_keyboard(language),
+                parse_mode='HTML'
+            )
+        elif message.text == section_dating_text:
+            await message.answer(
+                get_message("welcome", language),
+                reply_markup=get_dating_keyboard(language),
+                parse_mode='HTML'
+            )
+        elif message.text == section_companies_text:
+            await message.answer(
+                get_message("section_companies", language),
+                reply_markup=get_companies_keyboard(language),
+                parse_mode='HTML'
+            )
+        elif message.text == section_events_text:
+            await message.answer(
+                get_message("section_events", language),
+                reply_markup=get_events_keyboard(language),
+                parse_mode='HTML'
+            )
+        elif message.text == section_settings_text:
+            await message.answer(
+                get_message("section_settings", language),
+                reply_markup=get_settings_keyboard(language),
+                parse_mode='HTML'
+            )
+        elif message.text == back_to_main_text:
+            await message.answer(
+                get_message("welcome", language),
+                reply_markup=get_main_keyboard(language),
+                parse_mode='HTML'
+            )
+        # Handle specific actions
+        elif message.text == fill_profile_text:
+            await fill_profile_start(message, state)
+        elif message.text == edit_profile_text:
+            await edit_profile_start(message, state)
+        elif message.text == delete_profile_text:
+            await delete_profile_start(message, state)
+        elif message.text == find_company_text:
+            await find_company_start(message, state)
+        elif message.text == find_dating_my_city_text:
+            await find_dating_my_city_start(message, state)
+        elif message.text == find_dating_other_city_text:
+            await find_dating_other_city_start(message, state)
+        elif message.text == my_matches_text:
+            await show_matches(message)
+        elif message.text == create_event_text:
+            await create_event_start(message, state)
+        elif message.text == view_events_text:
+            await show_events_feed(message)
+        elif message.text == my_events_text:
+            await show_my_events(message)
+        elif message.text == premium_text:
+            await show_premium(message)
+        elif message.text == create_company_text:
+            await create_company_start(message, state)
+        elif message.text == find_companies_text:
+            await find_companies_start(message, state)
+        elif message.text == my_companies_text:
+            await show_my_companies(message)
+        elif message.text == change_lang_text:
+            await show_language_selection(message)
+        # Handle edit profile buttons
+        elif message.text == btn_edit_name_text:
+            await edit_name_start(message, state)
+        elif message.text == btn_edit_age_text:
+            await edit_age_start(message, state)
+        elif message.text == btn_edit_city_text:
+            await edit_city_start(message, state)
+        elif message.text == btn_edit_drink_text:
+            await edit_drink_start(message, state)
+        elif message.text == btn_edit_photo_text:
+            await edit_photo_start(message, state)
+        elif message.text == btn_edit_who_pays_text:
+            await edit_who_pays_start(message, state)
+        else:
+            logging.warning(f"Unknown button text: '{message.text}'")
+            # Fallback: try to show main menu
+            await message.answer(
+                get_message("welcome", language),
+                reply_markup=get_main_keyboard(language),
+                parse_mode='HTML'
+            )
+            
+    except Exception as e:
+        logging.error(f"Error in handle_main_menu: {e}")
+        language = 'ru'
+        await message.answer(get_message("error", language), parse_mode='HTML')
+
+async def edit_profile_start(message: types.Message, state: FSMContext):
+    """Start separate profile editing process"""
+    try:
+        user_profile = db.get_profile(message.from_user.id)
+        if not user_profile:
+            lang = await get_lang(message.from_user.id, state)
+            await message.answer(
+                get_message("need_profile_first", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(
+            "📝 Выберите, что хотите изменить в анкете:",
+            reply_markup=get_edit_profile_keyboard(lang),
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in edit_profile_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+async def delete_profile_start(message: types.Message, state: FSMContext):
+    """Start profile deletion process with confirmation"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        
+        # Show confirmation dialog
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_message("btn_yes", lang) if "btn_yes" in MESSAGES else "✅ Да, удалить", callback_data="confirm_delete_profile"),
+                InlineKeyboardButton(text=get_message("btn_no", lang) if "btn_no" in MESSAGES else "❌ Нет, отмена", callback_data="cancel_delete_profile")
+            ]
+        ])
+        
+        await message.answer(
+            get_message("confirm_delete_profile", lang),
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in delete_profile_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.callback_query(F.data == "confirm_delete_profile")
+async def confirm_delete_profile_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Confirm profile deletion"""
+    try:
+        user_id = callback.from_user.id
+        lang = get_user_language(user_id)
+        
+        # Delete profile and all related data
+        success = db.delete_profile(user_id)
+        
+        if success:
+            await callback.answer()
+            await callback.message.answer(
+                get_message("profile_deleted", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            logging.info(f"DEBUG: User {user_id} profile deleted successfully")
+        else:
+            await callback.answer(get_message("error", lang))
+        
+        # Clear state
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error in confirm_delete_profile_callback: {e}")
+        lang = get_user_language(callback.from_user.id)
+        await callback.answer(get_message("error", lang))
+
+@router.callback_query(F.data == "cancel_delete_profile")
+async def cancel_delete_profile_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Cancel profile deletion"""
+    try:
+        lang = get_user_language(callback.from_user.id)
+        await callback.answer()
+        await callback.message.answer(
+            get_message("action_cancelled", lang) if "action_cancelled" in MESSAGES else "🚫 Удаление отменено",
+            reply_markup=get_profile_keyboard(lang),
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in cancel_delete_profile_callback: {e}")
+        lang = get_user_language(callback.from_user.id)
+        await callback.answer(get_message("error", lang))
+
+# Separate edit field handlers
+async def edit_name_start(message: types.Message, state: FSMContext):
+    """Start name editing"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        field_name = get_message("field_name", lang)
+        await message.answer(
+            get_message("edit_field_prompt", lang, field=field_name),
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode='HTML'
+        )
+        await state.set_state(SeparateEditStates.edit_name)
+        
+    except Exception as e:
+        logging.error(f"Error in edit_name_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+async def edit_age_start(message: types.Message, state: FSMContext):
+    """Start age editing"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        field_name = get_message("field_age", lang)
+        await message.answer(
+            get_message("edit_field_prompt", lang, field=field_name),
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode='HTML'
+        )
+        await state.set_state(SeparateEditStates.edit_age)
+        
+    except Exception as e:
+        logging.error(f"Error in edit_age_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+async def edit_city_start(message: types.Message, state: FSMContext):
+    """Start city editing"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        field_name = get_message("field_city", lang)
+        await message.answer(
+            get_message("edit_field_prompt", lang, field=field_name),
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode='HTML'
+        )
+        await state.set_state(SeparateEditStates.edit_city)
+        
+    except Exception as e:
+        logging.error(f"Error in edit_city_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+async def edit_drink_start(message: types.Message, state: FSMContext):
+    """Start drink editing"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        field_name = get_message("field_drink", lang)
+        await message.answer(
+            get_message("edit_field_prompt", lang, field=field_name),
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode='HTML'
+        )
+        await state.set_state(SeparateEditStates.edit_favorite_drink)
+        
+    except Exception as e:
+        logging.error(f"Error in edit_drink_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+async def edit_photo_start(message: types.Message, state: FSMContext):
+    """Start photo editing"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(
+            "📷 Отправьте новое фото или нажмите 'Пропустить' чтобы оставить текущее",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Пропустить", callback_data="skip_edit_photo_separate")]
+            ]),
+            parse_mode='HTML'
+        )
+        await state.set_state(SeparateEditStates.edit_photo)
+        
+    except Exception as e:
+        logging.error(f"Error in edit_photo_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+async def edit_who_pays_start(message: types.Message, state: FSMContext):
+    """Start who pays editing"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_message("who_pays_each_self", lang), callback_data="edit_who_pays_each_self")],
+            [InlineKeyboardButton(text=get_message("who_pays_i_treat", lang), callback_data="edit_who_pays_i_treat")],
+            [InlineKeyboardButton(text=get_message("who_pays_someone_treats", lang), callback_data="edit_who_pays_someone_treats")]
+        ])
+        await message.answer(
+            "💰 Кто платит за напитки?",
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        await state.set_state(SeparateEditStates.edit_who_pays)
+        
+    except Exception as e:
+        logging.error(f"Error in edit_who_pays_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.message(SeparateEditStates.edit_name)
+async def process_edit_name_separate(message: types.Message, state: FSMContext):
+    """Process separate name editing"""
+    try:
+        if not message.text or not message.text.strip():
+            lang = await get_lang(message.from_user.id, state)
+            await message.answer("Имя не может быть пустым. Попробуйте еще раз:")
+            return
+        
+        user_id = message.from_user.id
+        success = db.update_profile(user_id, name=message.text.strip())
+        
+        if success:
+            logging.info(f"DEBUG: User {user_id} updated name to '{message.text.strip()}'")
+            lang = await get_lang(user_id, state)
+            await message.answer(
+                get_message("name_updated", lang),
+                reply_markup=get_edit_profile_keyboard(lang),
+                parse_mode='HTML'
+            )
+        else:
+            await message.answer(get_message("error", lang))
+        
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error in process_edit_name_separate: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.message(SeparateEditStates.edit_age)
+async def process_edit_age_separate(message: types.Message, state: FSMContext):
+    """Process separate age editing"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        
+        try:
+            age = int(message.text.strip())
+            if age < 18 or age > 100:
+                await message.answer("Возраст должен быть от 18 до 100. Попробуйте еще раз:")
+                return
+        except ValueError:
+            await message.answer("Пожалуйста, введите корректный возраст (число):")
+            return
+        
+        user_id = message.from_user.id
+        success = db.update_profile(user_id, age=age)
+        
+        if success:
+            logging.info(f"DEBUG: User {user_id} updated age to {age}")
+            lang = await get_lang(user_id, state)
+            await message.answer(
+                get_message("age_updated", lang),
+                reply_markup=get_edit_profile_keyboard(lang),
+                parse_mode='HTML'
+            )
+        else:
+            await message.answer(get_message("error", lang))
+        
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error in process_edit_age_separate: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.message(SeparateEditStates.edit_city)
+async def process_edit_city_separate(message: types.Message, state: FSMContext):
+    """Process separate city editing"""
+    try:
+        if not message.text or not message.text.strip():
+            await message.answer("Город не может быть пустым. Попробуйте еще раз:")
+            return
+        
+        user_id = message.from_user.id
+        success = db.update_profile(user_id, city=message.text.strip())
+        
+        if success:
+            logging.info(f"DEBUG: User {user_id} updated city to '{message.text.strip()}'")
+            lang = await get_lang(user_id, state)
+            await message.answer(
+                get_message("city_updated", lang),
+                reply_markup=get_edit_profile_keyboard(lang),
+                parse_mode='HTML'
+            )
+        else:
+            await message.answer(get_message("error", lang))
+        
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error in process_edit_city_separate: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.message(SeparateEditStates.edit_favorite_drink)
+async def process_edit_drink_separate(message: types.Message, state: FSMContext):
+    """Process separate drink editing"""
+    try:
+        if not message.text or not message.text.strip():
+            await message.answer("Напиток не может быть пустым. Попробуйте еще раз:")
+            return
+        
+        user_id = message.from_user.id
+        success = db.update_profile(user_id, favorite_drink=message.text.strip())
+        
+        if success:
+            logging.info(f"DEBUG: User {user_id} updated favorite drink to '{message.text.strip()}'")
+            lang = await get_lang(user_id, state)
+            await message.answer(
+                get_message("drink_updated", lang),
+                reply_markup=get_edit_profile_keyboard(lang),
+                parse_mode='HTML'
+            )
+        else:
+            await message.answer(get_message("error", lang))
+        
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error in process_edit_drink_separate: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.message(SeparateEditStates.edit_photo, F.photo)
+async def process_edit_photo_separate(message: types.Message, state: FSMContext):
+    """Process separate photo editing"""
+    try:
+        user_id = message.from_user.id
+        success = db.update_profile(user_id, photo_id=message.photo[-1].file_id)
+        
+        if success:
+            logging.info(f"DEBUG: User {user_id} updated photo")
+            lang = await get_lang(user_id, state)
+            await message.answer(
+                get_message("photo_updated", lang),
+                reply_markup=get_edit_profile_keyboard(lang),
+                parse_mode='HTML'
+            )
+        else:
+            await message.answer(get_message("error", lang))
+        
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error in process_edit_photo_separate: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.callback_query(F.data == "skip_edit_photo_separate", SeparateEditStates.edit_photo)
+async def skip_edit_photo_separate(callback: types.CallbackQuery, state: FSMContext):
+    """Skip photo editing"""
+    try:
+        await callback.answer()
+        lang = await get_lang(callback.from_user.id, state)
+        await callback.message.answer(
+            get_message("photo_skipped", lang),
+            reply_markup=get_edit_profile_keyboard(lang),
+            parse_mode='HTML'
+        )
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error in skip_edit_photo_separate: {e}")
+        lang = await get_lang(callback.from_user.id, state)
+        await callback.answer(get_message("error", lang))
+
+@router.callback_query(F.data.startswith("edit_who_pays_"), SeparateEditStates.edit_who_pays)
+async def process_edit_who_pays_separate(callback: types.CallbackQuery, state: FSMContext):
+    """Process separate who pays editing"""
+    try:
+        who_pays = callback.data.split("_")[3]
+        user_id = callback.from_user.id
+        success = db.update_profile(user_id, who_pays=who_pays)
+        
+        if success:
+            logging.info(f"DEBUG: User {user_id} updated who_pays to '{who_pays}'")
+            lang = await get_lang(user_id, state)
+            await callback.answer()
+            await callback.message.answer(
+                get_message("who_pays_updated", lang),
+                reply_markup=get_edit_profile_keyboard(lang),
+                parse_mode='HTML'
+            )
+        else:
+            await callback.answer(get_message("error", lang))
+        
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error in process_edit_who_pays_separate: {e}")
+        lang = await get_lang(callback.from_user.id, state)
+        await callback.answer(get_message("error", lang))
+
+# Dating functions with city separation
+async def find_dating_my_city_start(message: types.Message, state: FSMContext):
+    """Start dating search in user's city"""
+    try:
+        user_profile = db.get_profile(message.from_user.id)
+        if not user_profile:
+            lang = await get_lang(message.from_user.id, state)
+            await message.answer(
+                get_message("need_profile_first", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        # Get profiles from user's city and nearby cities
+        profiles = db.get_profiles_for_swiping_nearby(message.from_user.id, limit=10)
+        
+        if not profiles:
+            lang = await get_lang(message.from_user.id, state)
+            await message.answer(
+                get_message("no_profiles", lang),
+                reply_markup=get_dating_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        # Start swiping with first profile
+        await state.set_state(SwipeStates.swiping)
+        await state.update_data(profiles=profiles, current_index=0)
+        
+        await message.answer(
+            f"🔍 Ищем знакомства в вашем городе ({user_profile['city'].title()})",
+            parse_mode='HTML'
+        )
+        
+        await show_next_profile(message, state)
+        
+    except Exception as e:
+        logging.error(f"Error in find_dating_my_city_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+async def find_dating_other_city_start(message: types.Message, state: FSMContext):
+    """Start city selection for dating in other cities"""
+    try:
+        user_profile = db.get_profile(message.from_user.id)
+        if not user_profile:
+            lang = await get_lang(message.from_user.id, state)
+            await message.answer(
+                get_message("need_profile_first", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(
+            get_message("select_dating_city", lang),
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode='HTML'
+        )
+        await state.set_state(DatingCityStates.city_input)
+        
+    except Exception as e:
+        logging.error(f"Error in find_dating_other_city_start: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.message(DatingCityStates.city_input)
+async def process_dating_city_input(message: types.Message, state: FSMContext):
+    """Process city input for dating search"""
+    try:
+        if not message.text or not message.text.strip():
+            lang = await get_lang(message.from_user.id, state)
+            await message.answer("Город не может быть пустым. Попробуйте еще раз:")
+            return
+        
+        city_input = message.text.strip()
+        user_id = message.from_user.id
+        lang = await get_lang(user_id, state)
+        
+        # Normalize city and search for profiles
+        city_normalized = db.normalize_city(city_input)
+        
+        # Get profiles from specified city and nearby cities
+        profiles = db.get_profiles_for_swiping_nearby_by_city(user_id, city_normalized, limit=10)
+        
+        if not profiles:
+            await message.answer(
+                get_message("no_profiles_in_city", lang, city=city_input.title()),
+                reply_markup=get_dating_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        # Start swiping with first profile
+        await state.set_state(SwipeStates.swiping)
+        await state.update_data(profiles=profiles, current_index=0, search_city=city_normalized)
+        
+        await message.answer(
+            get_message("dating_in_city", lang, city=city_input.title()),
+            parse_mode='HTML'
+        )
+        
+        await show_next_profile(message, state)
+        
+    except Exception as e:
+        logging.error(f"Error in process_dating_city_input: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+# My events functions
+async def show_my_events(message: types.Message):
+    """Show user's created events with management options"""
+    try:
+        user_id = message.from_user.id
+        lang = await get_lang(user_id)
+        
+        # Get all events (including expired ones for temporary display)
+        all_events = db.get_user_events(user_id)
+        
+        # Filter to show only active events
+        active_events = []
+        for event in all_events:
+            time_remaining = db.get_time_remaining(event['expires_at'])
+            if time_remaining != "00:00":  # Only show active events
+                active_events.append(event)
+        
+        if not active_events:
+            await message.answer(
+                get_message("no_my_events", lang),
+                reply_markup=get_events_keyboard(lang),
+                parse_mode='HTML'
+            )
+            return
+        
+        await message.answer(f"📅 Ваши тусовки ({len(active_events)}):", parse_mode='HTML')
+        
+        for event in active_events:
+            # Calculate time remaining
+            time_remaining = db.get_time_remaining(event['expires_at'])
+            is_expired = time_remaining == "00:00"
+            
+            # Create delete button
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=get_message("delete_event", lang), callback_data=f"delete_event_{event['id']}")]
+            ])
+            
+            # Create event text with time remaining
+            status_text = get_message("event_expired", lang) if is_expired else get_message("time_remaining", lang, time=time_remaining)
+            
+            event_text = (
+                f"📅 <b>{event['name']}</b>\n"
+                f"📍 {event['place']}\n"
+                f"💰 {'Бесплатно' if event['price_type'] == 'free' else 'Платно'}\n"
+                f"📝 {event['description']}\n"
+                f"👤 Создатель: {event['creator_name']}\n"
+                f"👥 Участников: {event['current_members']}\n"
+                f"{status_text}"
+            )
+            
+            await message.answer(
+                event_text,
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+        
+    except Exception as e:
+        logging.error(f"Error in show_my_events: {e}")
+        lang = await get_lang(message.from_user.id)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.callback_query(F.data.startswith("delete_event_"))
+async def delete_event_callback(callback: types.CallbackQuery):
+    """Handle event deletion with confirmation"""
+    try:
+        event_id = int(callback.data.split("_")[2])
+        user_id = callback.from_user.id
+        lang = get_user_language(user_id)
+        
+        # Show confirmation dialog
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_delete_{event_id}"),
+                InlineKeyboardButton(text="❌ Нет", callback_data="cancel_delete")
+            ]
+        ])
+        
+        await callback.answer()
+        await callback.message.answer(
+            get_message("confirm_delete_event", lang),
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in delete_event_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+@router.callback_query(F.data.startswith("confirm_delete_"))
+async def confirm_delete_event_callback(callback: types.CallbackQuery):
+    """Confirm event deletion"""
+    try:
+        event_id = int(callback.data.split("_")[2])
+        user_id = callback.from_user.id
+        lang = get_user_language(user_id)
+        
+        # Delete the event
+        success = db.delete_event(event_id, user_id)
+        
+        if success:
+            await callback.answer()
+            await callback.message.answer(
+                get_message("event_deleted", lang),
+                reply_markup=get_events_keyboard(lang),
+                parse_mode='HTML'
+            )
+            logging.info(f"DEBUG: Event {event_id} deleted by user {user_id}")
+        else:
+            await callback.answer("❌ Не удалось удалить тусовку")
+        
+    except Exception as e:
+        logging.error(f"Error in confirm_delete_event_callback: {e}")
+        await callback.answer("❌ Ошибка при удалении")
+
+@router.callback_query(F.data == "cancel_delete")
+async def cancel_delete_callback(callback: types.CallbackQuery):
+    """Cancel event deletion"""
+    try:
+        lang = get_user_language(callback.from_user.id)
+        await callback.answer()
+        await callback.message.answer(
+            "Удаление отменено",
+            reply_markup=get_events_keyboard(lang),
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in cancel_delete_callback: {e}")
+        await callback.answer("❌ Ошибка")
