@@ -413,14 +413,27 @@ async def language_selection_callback(callback: types.CallbackQuery, state: FSMC
         'en': '🇬🇧 English'
     }.get(lang_code, 'Русский')
     
-    await callback.answer(f"Язык изменен на {language_name}")
+    # Localized success message
+    success_messages = {
+        'ru': f"✅ Язык изменен на {language_name}!",
+        'ua': f"✅ Мову змінено на {language_name}!",
+        'en': f"✅ Language changed to {language_name}!"
+    }
+    
+    await callback.answer(success_messages.get(lang_code, success_messages['ru']))
     
     # Check if user already has a profile
     existing_profile = db.get_profile(user_id)
     if existing_profile and existing_profile.get('name'):
         # User has a profile - show main menu
+        success_messages_main = {
+            'ru': f"✅ Язык успешно изменен на {language_name}!",
+            'ua': f"✅ Мову успішно змінено на {language_name}!",
+            'en': f"✅ Language successfully changed to {language_name}!"
+        }
+        
         await callback.message.answer(
-            f"✅ Язык успешно изменен на {language_name}!",
+            success_messages_main.get(lang_code, success_messages_main['ru']),
             reply_markup=get_main_keyboard(lang_code),
             parse_mode='HTML'
         )
