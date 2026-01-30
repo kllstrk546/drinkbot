@@ -416,6 +416,16 @@ MESSAGES = {
         "ua": "🎉 Хочете приєднатися до якоїсь тусовки?",
         "en": "🎉 Want to join any event?"
     },
+    "profile_already_exists": {
+        "ru": "📝 Ваша анкета уже заполнена:\n\n👤 <b>{name}</b>, {age}\n🏙️ {city}\n🍺 {drink}{photo}\n\nХотите обновить анкету?",
+        "ua": "📝 Ваша анкета вже заповнена:\n\n👤 <b>{name}</b>, {age}\n🏙️ {city}\n🍺 {drink}{photo}\n\nХочете оновити анкету?",
+        "en": "📝 Your profile is already filled:\n\n👤 <b>{name}</b>, {age}\n🏙️ {city}\n🍺 {drink}{photo}\n\nWant to update your profile?"
+    },
+    "btn_update_profile": {
+        "ru": "✏️ Обновить анкету",
+        "ua": "✏️ Оновити анкету",
+        "en": "✏️ Update Profile"
+    },
     
     # Premium
     "premium_title": {
