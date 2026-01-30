@@ -18,15 +18,16 @@ conn.commit()
 # Создадим бота с правильными индексами
 cursor.execute('''
     INSERT INTO profiles (
-        user_id, username, name, age, city, city_display,
+        user_id, username, name, age, gender, city, city_display,
         city_normalized, favorite_drink, photo_id, who_pays, language,
         is_bot, bot_photo_path, last_rotation_date
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ''', (
     -9999999,  # user_id
     'test_bot_kyiv',  # username
     'Анна',  # name
     22,  # age
+    'female',  # gender
     'Киев',  # city
     'Киев',  # city_display
     'Kyiv',  # city_normalized

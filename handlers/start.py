@@ -782,7 +782,6 @@ async def process_photo(message: types.Message, state: FSMContext):
         try:
             success = db.create_profile(
                 user_id=message.from_user.id,
-                username=message.from_user.username,
                 name=user_data['name'],
                 age=user_data['age'],
                 gender=user_data['gender'],
@@ -790,7 +789,8 @@ async def process_photo(message: types.Message, state: FSMContext):
                 favorite_drink=user_data['favorite_drink'],
                 photo_id=photo_id,
                 who_pays=user_data['who_pays'],
-                language=lang  # Use user's actual language
+                language=lang,  # Use user's actual language
+                username=message.from_user.username
             )
         except Exception as db_error:
             logging.error(f"Database error saving profile: {db_error}")
@@ -3295,8 +3295,8 @@ async def process_profile_gender(callback: types.CallbackQuery, state: FSMContex
                 gender=data['gender'],
                 city=data['city'],
                 favorite_drink=data['favorite_drink'],
-                who_pays=data['who_pays'],
-                photo_id=data['photo_id']
+                photo_id=data['photo_id'],
+                who_pays=data['who_pays']
             )
             
             if success:
@@ -3410,8 +3410,8 @@ async def process_profile_photo(message: types.Message, state: FSMContext):
             gender=data['gender'],  # Now we have gender!
             city=data['city'],
             favorite_drink=data['favorite_drink'],
-            who_pays=data['who_pays'],
-            photo_id=photo_id
+            photo_id=photo_id,
+            who_pays=data['who_pays']
         )
         
         if success:

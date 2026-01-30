@@ -190,6 +190,7 @@ class BotFactory:
             'city_display': city,
             'city_normalized': city_normalized,
             'favorite_drink': drink,
+            'photo_id': f'AgACAgIAAxkDAAIBOGf6T7X8Y7x9v2w3y4z5a6b7c8d9e0f1g2h3i4j5k6l7m8n9',  # Placeholder photo_id
             'who_pays': who_pays,
             'language': random.choice(['ru', 'ua']),
             'is_bot': 1,
@@ -206,14 +207,14 @@ class BotFactory:
                 cursor.execute('''
                     INSERT OR REPLACE INTO profiles (
                         user_id, username, name, age, gender, city, city_display,
-                        city_normalized, favorite_drink, who_pays, language,
+                        city_normalized, favorite_drink, photo_id, who_pays, language,
                         is_bot, bot_photo_path, last_rotation_date
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     profile['user_id'], profile['username'], profile['name'],
                     profile['age'], profile['gender'], profile['city'],
                     profile['city_display'], profile['city_normalized'],
-                    profile['favorite_drink'], profile['who_pays'],
+                    profile['favorite_drink'], profile['photo_id'], profile['who_pays'],
                     profile['language'], profile['is_bot'], profile['bot_photo_path'],
                     profile['last_rotation_date']
                 ))

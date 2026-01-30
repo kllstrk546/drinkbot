@@ -331,8 +331,8 @@ class Database:
             logging.info(f"DEBUG: Создан профиль пользователя {user_id}. Город в базе: '{city_normalized}', отображение: '{city_display}'")
             
             query = '''
-                INSERT OR REPLACE INTO profiles (user_id, username, name, age, gender, city, city_display, city_normalized, favorite_drink, photo_id, who_pays, language)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO profiles (user_id, username, name, age, gender, city, city_display, city_normalized, favorite_drink, photo_id, who_pays, language, is_bot)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             '''
             params = (user_id, username, name, age, gender, city_display, city_display, city_normalized, favorite_drink, photo_id, who_pays, language)
             
