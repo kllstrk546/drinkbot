@@ -12,8 +12,39 @@ from datetime import datetime
 import random
 
 from handlers.start import router
-from rotation_check import check_daily_rotation
-from notification_system import get_notification_system
+# from rotation_check import check_daily_rotation  # Temporarily disabled
+# from notification_system import get_notification_system  # Temporarily disabled
+
+# Simple rotation check
+async def simple_rotation_check():
+    """Simple daily rotation check"""
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        with sqlite3.connect('drink_bot.db') as conn:
+            cursor = conn.cursor()
+            
+            # Check if we need rotation
+            cursor.execute('SELECT MAX(date) FROM daily_bot_order')
+            last_rotation = cursor.fetchone()[0]
+            
+            if last_rotation != today:
+                logging.info(f"Daily rotation needed: {last_rotation} -> {today}")
+                
+                # Simple activation
+                cursor.execute('''
+                    UPDATE profiles 
+                    SET last_rotation_date = ?
+                    WHERE is_bot = 1 AND (last_rotation_date IS NULL OR last_rotation_date != ?)
+                ''', (today, today))
+                
+                conn.commit()
+                logging.info(f"Daily rotation completed")
+            else:
+                logging.info(f"Daily rotation up to date: {today}")
+                
+    except Exception as e:
+        logging.error(f"Error in rotation check: {e}")
 
 # Load environment variables
 load_dotenv()
@@ -139,12 +170,12 @@ async def main():
         logger.info("📋 Registration router included FIRST")
         
         # Check daily bot rotation
-        await check_daily_rotation()
+        await simple_rotation_check()
         
         # Initialize and start notification system
-        notification_system = get_notification_system(bot)
-        asyncio.create_task(notification_system.start_notification_scheduler())
-        logger.info("📬 Notification system started")
+        # notification_system = get_notification_system(bot)
+        # asyncio.create_task(notification_system.start_notification_scheduler())
+        # logger.info("📬 Notification system started")  # Temporarily disabled
         
         logger.info("🚀 Starting bot...")
         

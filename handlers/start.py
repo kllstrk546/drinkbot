@@ -1301,9 +1301,9 @@ async def send_profile_with_photo(message, profile, user_id, state):
         lang = await get_lang(user_id, state)
         
         # Update user activity
-        from notification_system import get_notification_system
-        notification_system = get_notification_system(message.bot)
-        await notification_system.update_user_activity(user_id)
+        # from notification_system import get_notification_system  # Temporarily disabled
+        # notification_system = get_notification_system(message.bot)
+        # await notification_system.update_user_activity(user_id)  # Temporarily disabled
         
         # Format profile text
         profile_text = f"👤 {profile['name']}, {profile['age']}\n🏙️ {profile['city'].title()}\n🍺 {profile['favorite_drink']}"
