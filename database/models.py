@@ -659,22 +659,17 @@ class Database:
             return False
     
     def update_user_language(self, user_id: int, language: str) -> bool:
-        """Update user's language preference"""
+        """Update user's language preference in user_settings table"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    UPDATE profiles 
-                    SET language = ? 
-                    WHERE user_id = ?
-                ''', (language, user_id))
+                    INSERT OR REPLACE INTO user_settings (user_id, language, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                ''', (user_id, language))
                 conn.commit()
-                success = cursor.rowcount > 0
-                if success:
-                    logging.info(f"Language updated for user {user_id}: {language}")
-                else:
-                    logging.warning(f"No profile found to update language for user {user_id}")
-                return success
+                logging.info(f"Language saved to user_settings for user {user_id}: {language}")
+                return True
         except sqlite3.Error as e:
             logging.error(f"DB Error updating user language: {e}")
             return False
@@ -720,14 +715,25 @@ class Database:
         return icebreaker
     
     def get_user_language(self, user_id: int) -> str:
-        """Get user's language preference"""
+        """Get user's language preference from user_settings first, then profiles"""
         try:
+            # First try user_settings table
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT language FROM user_settings WHERE user_id = ?', (user_id,))
+                result = cursor.fetchone()
+                if result:
+                    language = result[0]
+                    logging.debug(f"Language from user_settings for user {user_id}: {language}")
+                    return language
+            
+            # Fallback to profiles table
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('SELECT language FROM profiles WHERE user_id = ?', (user_id,))
                 result = cursor.fetchone()
                 language = result[0] if result else 'ru'
-                logging.debug(f"Language for user {user_id}: {language}")
+                logging.debug(f"Language from profiles for user {user_id}: {language}")
                 return language
         except sqlite3.Error as e:
             logging.error(f"DB Error getting user language: {e}")

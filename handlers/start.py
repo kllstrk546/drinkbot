@@ -25,23 +25,34 @@ def set_bot_instance(bot: Bot):
     bot_instance = bot
 
 async def get_lang(user_id: int, state: FSMContext = None) -> str:
-    """Get user language from state first, then from database"""
+    """Get user language from state first, then database"""
     try:
         # First try to get from state
         if state:
             data = await state.get_data()
             if 'language' in data:
+                logging.info(f"DEBUG: Got language '{data['language']}' from state for user {user_id}")
                 return data['language']
         
         # Then try to get from database
-        return db.get_user_language(user_id)
-    except:
+        lang = db.get_user_language(user_id)
+        if lang != 'ru':  # If not fallback
+            logging.info(f"DEBUG: Got language '{lang}' from database for user {user_id}")
+            return lang
+        
+        logging.info(f"DEBUG: Using fallback language 'ru' for user {user_id}")
+        return 'ru'  # Fallback to Russian
+    except Exception as e:
+        logging.error(f"Error getting language for user {user_id}: {e}")
         return 'ru'  # Fallback to Russian
 
 def get_user_language(user_id: int) -> str:
     """Get user language from database (synchronous version)"""
     try:
-        return db.get_user_language(user_id)
+        lang = db.get_user_language(user_id)
+        if lang != 'ru':  # If not fallback
+            return lang
+        return 'ru'  # Fallback to Russian
     except:
         return 'ru'  # Fallback to Russian
 
@@ -449,7 +460,7 @@ async def fill_profile_start(message: types.Message, state: FSMContext):
     """Start profile filling process"""
     # Get user language properly
     user_id = message.from_user.id
-    language = get_user_language(user_id)  # Get from database
+    language = await get_lang(user_id, state)  # Use state-aware function
     
     # Check if profile already exists
     existing_profile = db.get_profile(user_id)
@@ -461,13 +472,13 @@ async def fill_profile_start(message: types.Message, state: FSMContext):
         ])
         photo_text = f"\n📸 Фото: {'Есть' if existing_profile['photo_id'] else 'Нет'}" if existing_profile.get('photo_id') else ""
         await message.answer(
-            get_message("profile_exists", language, 
-                     name=existing_profile['name'], 
-                     age=existing_profile['age'], 
-                     city=existing_profile['city'].title(),
-                     drink=existing_profile['favorite_drink'],
-                     photo=photo_text),
-            reply_markup=keyboard
+            get_message("profile_already_exists", language,
+                       name=existing_profile['name'],
+                       age=existing_profile['age'],
+                       city=existing_profile['city'].title(),
+                       drink=existing_profile['favorite_drink']) + photo_text,
+            reply_markup=keyboard,
+            parse_mode='HTML'
         )
         return
     
@@ -2287,11 +2298,13 @@ async def handle_main_menu(message: types.Message, state: FSMContext):
     try:
         logging.info(f"handle_main_menu called with text: '{message.text}' from user {message.from_user.id}")
 
+        # Get language from state first, then database, then profile
+        language = await get_lang(message.from_user.id, state)
+        
+        # If user has profile, use profile language as fallback
         user_profile = db.get_profile(message.from_user.id)
-        if user_profile and user_profile.get('language'):
+        if user_profile and user_profile.get('language') and language == 'ru':
             language = user_profile['language']
-        else:
-            language = 'ru'
 
         # Sections - safe get_message calls
         try:
