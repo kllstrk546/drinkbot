@@ -424,14 +424,14 @@ MESSAGES = {
         "en": "💎 <b>Drink Bot Premium Subscription</b>"
     },
     "premium_features": {
-        "ru": "🚀 Откройте новые возможности:\n\n🔍 <b>Продвинутые фильтры:</b>\n• Фильтр по полу (мужской/женский)\n• Фильтр по тому, кто платит\n\n📈 <b>Повышенная видимость:</b>\n• Ваш профиль показывается чаще\n• Больше мэтчей в день\n\n🎯 <b>Без ограничений:</b>\n• Безлимитные свайпы\n• Смотрите всех, кто лайкнул вас\n\n💰 <b>Стоимость: 500 Telegram Stars</b>\n\nПопробуйте и находите идеальную компанию быстрее! 🍻",
-        "ua": "🚀 Відкрийте нові можливості:\n\n🔍 <b>Розширені фільтри:</b>\n• Фільтр за статтю (чоловіча/жіноча)\n• Фільтр за тим, хто платить\n\n📈 <b>Підвищена видимість:</b>\n• Ваш профіль показується частіше\n• Більше мэтчів на день\n\n🎯 <b>Без обмежень:</b>\n• Нескінченні свайпи\n• Дивіться всіх, хто поставив лайк\n\n💰 <b>Вартість: 500 Telegram Stars</b>\n\nСпробуйте і знаходьте ідеальну компанію швидше! 🍻",
-        "en": "🚀 Unlock new features:\n\n🔍 <b>Advanced Filters:</b>\n• Gender filter (male/female)\n• Who pays filter\n\n📈 <b>Increased Visibility:</b>\n• Your profile shown more often\n• More matches per day\n\n🎯 <b>No Limits:</b>\n• Unlimited swipes\n• View all who liked you\n\n💰 <b>Cost: 500 Telegram Stars</b>\n\nTry it and find the perfect company faster! 🍻"
+        "ru": "🚀 Откройте новые возможности:\n\n🔍 <b>Продвинутые фильтры:</b>\n• Фильтр по полу (мужской/женский)\n• Фильтр по тому, кто платит\n\n📈 <b>Повышенная видимость:</b>\n• Ваш профиль показывается чаще\n• Больше мэтчей в день\n\n🎯 <b>Без ограничений:</b>\n• Безлимитные свайпы\n• Смотрите всех, кто лайкнул вас\n\n💰 <b>Стоимость: 150 Telegram Stars</b>\n\nПопробуйте и находите идеальную компанию быстрее! 🍻",
+        "ua": "🚀 Відкрийте нові можливості:\n\n🔍 <b>Розширені фільтри:</b>\n• Фільтр за статтю (чоловіча/жіноча)\n• Фільтр за тим, хто платить\n\n📈 <b>Підвищена видимість:</b>\n• Ваш профіль показується частіше\n• Більше мэтчів на день\n\n🎯 <b>Без обмежень:</b>\n• Нескінченні свайпи\n• Дивіться всіх, хто поставив лайк\n\n💰 <b>Вартість: 150 Telegram Stars</b>\n\nСпробуйте і знаходьте ідеальну компанію швидше! 🍻",
+        "en": "🚀 Unlock new features:\n\n🔍 <b>Advanced Filters:</b>\n• Gender filter (male/female)\n• Who pays filter\n\n📈 <b>Increased Visibility:</b>\n• Your profile shown more often\n• More matches per day\n\n🎯 <b>No Limits:</b>\n• Unlimited swipes\n• View all who liked you\n\n💰 <b>Cost: 150 Telegram Stars</b>\n\nTry it and find the perfect company faster! 🍻"
     },
     "btn_buy_premium": {
-        "ru": "💎 Купить за 500 Telegram Stars",
-        "ua": "💎 Купити за 500 Telegram Stars",
-        "en": "💎 Buy for 500 Telegram Stars"
+        "ru": "💎 Купить за 150 Telegram Stars",
+        "ua": "💎 Купити за 150 Telegram Stars",
+        "en": "💎 Buy for 150 Telegram Stars"
     },
     "premium_filters": {
         "ru": "🔍 <b>Премиум фильтры</b>\n\nВыберите параметры для поиска:",

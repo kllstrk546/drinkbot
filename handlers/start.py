@@ -16,8 +16,8 @@ router = Router()
 geolocator = Nominatim(user_agent="drink_bot")
 bot_instance = None  # Global bot instance for notifications
 
-PREMIUM_STARS_PRICE = 500
-PREMIUM_PAYLOAD_PREFIX = "premium_500:"
+PREMIUM_STARS_PRICE = 150
+PREMIUM_PAYLOAD_PREFIX = "premium_150:"
 
 def set_bot_instance(bot: Bot):
     """Set global bot instance for notifications"""
@@ -2478,7 +2478,7 @@ async def handle_main_menu(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "buy_premium")
 async def buy_premium_callback(callback: types.CallbackQuery):
-    """Send Telegram Stars invoice for Premium (500 XTR)"""
+    """Send Telegram Stars invoice for Premium (150 XTR)"""
     try:
         user_id = callback.from_user.id
         lang = get_user_language(user_id)
