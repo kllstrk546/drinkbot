@@ -378,11 +378,9 @@ class Database:
             logging.error(f"DB Error getting profile: {e}")
             return None
     
-    def find_profiles_for_swipe(self, user_id: int, city: str = None, limit: int = 50) -> List[Dict[str, Any]]:
-        """Find profiles for swipe gallery using ONLY city_normalized for comparison"""
+    def find_profiles_for_swipe(self, user_id: int, city: str = None, gender: str = None, limit: int = 10) -> list:
+        """Find profiles for swiping with proper error handling"""
         try:
-            logging.info(f"DEBUG: find_profiles_for_swipe called with user_id={user_id}, city='{city}', limit={limit}")
-            
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
@@ -392,29 +390,46 @@ class Database:
                 liked_ids = [row[0] for row in cursor.fetchall()]
                 logging.info(f"DEBUG: User {user_id} already liked {len(liked_ids)} profiles")
                 
-                # Exclude own profile and already liked profiles
-                exclude_ids = [user_id] + liked_ids
+                # Exclude own profile and already liked profiles - ensure all are integers
+                exclude_ids = [int(user_id)] + [int(liked_id) for liked_id in liked_ids if liked_id is not None]
                 placeholders = ','.join(['?' for _ in exclude_ids])
+                
+                # Ensure limit is integer
+                limit = int(limit) if limit else 10
                 
                 if city and city.strip():
                     # Normalize the search city and search ONLY in city_normalized
                     city_normalized = self.normalize_city(city.strip())
                     logging.info(f"DEBUG: Searching in city_normalized='{city_normalized}' (from input: '{city}')")
                     
-                    cursor.execute(f'''
+                    # Build query safely
+                    query = f'''
                         SELECT * FROM profiles 
                         WHERE city_normalized = ? AND user_id NOT IN ({placeholders})
                         ORDER BY created_at DESC 
                         LIMIT ?
-                    ''', [city_normalized] + exclude_ids + [limit])
+                    '''
+                    params = [city_normalized] + exclude_ids + [limit]
+                    
+                    logging.info(f"DEBUG: Query: {query}")
+                    logging.info(f"DEBUG: Params: {params}")
+                    
+                    cursor.execute(query, params)
                 else:
                     logging.warning(f"DEBUG: No city provided for user {user_id}, searching all profiles")
-                    cursor.execute(f'''
+                    
+                    query = f'''
                         SELECT * FROM profiles 
                         WHERE user_id NOT IN ({placeholders})
                         ORDER BY created_at DESC 
                         LIMIT ?
-                    ''', exclude_ids + [limit])
+                    '''.format(placeholders)
+                    params = exclude_ids + [limit]
+                    
+                    logging.info(f"DEBUG: Query: {query}")
+                    logging.info(f"DEBUG: Params: {params}")
+                    
+                    cursor.execute(query, params)
                 
                 results = cursor.fetchall()
                 profiles = [dict(row) for row in results]
@@ -431,27 +446,100 @@ class Database:
             logging.error(f"DEBUG: Traceback: {traceback.format_exc()}")
             return []
     
-    def update_profile(self, user_id: int, **kwargs) -> bool:
-        """Update user profile"""
-        if not kwargs:
-            return False
-        
+    def get_profile_likes(self, user_id: int) -> list:
+        """Get profiles liked by user"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT p.* FROM profiles p
+                    JOIN likes l ON p.user_id = l.to_user_id
+                    WHERE l.from_user_id = ?
+                    ORDER BY l.created_at DESC
+                ''', (user_id,))
+                results = cursor.fetchall()
+                return [dict(row) for row in results] if results else []
+        except sqlite3.Error as e:
+            print(f"Error getting profile likes: {e}")
+            return []
+    
+    def like_profile(self, from_user_id: int, to_user_id: int) -> bool:
+        """Like a profile"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                set_clause = ", ".join([f"{key} = ?" for key in kwargs.keys()])
-                values = list(kwargs.values()) + [user_id]
-                
-                cursor.execute(f'''
-                    UPDATE profiles 
-                    SET {set_clause} 
-                    WHERE user_id = ?
-                ''', values)
+                cursor.execute('''
+                    INSERT OR IGNORE INTO likes (from_user_id, to_user_id, created_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                ''', (from_user_id, to_user_id))
                 conn.commit()
                 return cursor.rowcount > 0
         except sqlite3.Error as e:
-            print(f"Error updating profile: {e}")
+            print(f"Error liking profile: {e}")
             return False
+    
+    def get_mutual_likes(self, user_id: int) -> list:
+        """Get mutual likes"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT p.* FROM profiles p
+                    WHERE p.user_id IN (
+                        SELECT to_user_id FROM likes WHERE from_user_id = ?
+                        INTERSECT
+                        SELECT from_user_id FROM likes WHERE to_user_id = ?
+                    )
+                ''', (user_id, user_id))
+                results = cursor.fetchall()
+                return [dict(row) for row in results] if results else []
+        except sqlite3.Error as e:
+            print(f"Error getting mutual likes: {e}")
+            return []
+    
+    def get_city_bot_count(self, city: str) -> int:
+        """Get count of bots in city"""
+        try:
+            city_normalized = self.normalize_city(city)
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT COUNT(*) FROM profiles 
+                    WHERE is_bot = 1 AND city_normalized = ?
+                ''', (city_normalized,))
+                result = cursor.fetchone()
+                return result[0] if result else 0
+        except sqlite3.Error as e:
+            print(f"Error getting city bot count: {e}")
+            return 0
+    
+    def get_daily_limits(self, city: str) -> dict:
+        """Get daily limits for city"""
+        try:
+            city_normalized = self.normalize_city(city)
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT daily_limit, bots_shown, date 
+                    FROM daily_bot_limits 
+                    WHERE city_normalized = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', (city_normalized,))
+                result = cursor.fetchone()
+                if result:
+                    return {
+                        'daily_limit': result[0],
+                        'current_count': result[1],
+                        'last_rotation_date': result[2]
+                    }
+                else:
+                    return {'daily_limit': 5, 'current_count': 0, 'last_rotation_date': None}
+        except sqlite3.Error as e:
+            print(f"Error getting daily limits: {e}")
+            return {'daily_limit': 5, 'current_count': 0, 'last_rotation_date': None}
     
     def delete_profile(self, user_id: int) -> bool:
         """Delete user profile"""
