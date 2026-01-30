@@ -70,6 +70,7 @@ class ProfileStates(StatesGroup):
     favorite_drink = State()
     who_pays = State()
     photo = State()
+    gender = State()
 
 class EventStates(StatesGroup):
     event_name = State()
@@ -306,11 +307,14 @@ def get_settings_keyboard(language: str = 'ru') -> ReplyKeyboardMarkup:
     )
 
 def get_swipe_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
-    """Get inline keyboard for swipe actions (like/dislike)"""
+    """Get inline keyboard for swipe actions (like/dislike/back)"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="❤️", callback_data="like"),
             InlineKeyboardButton(text="👎", callback_data="dislike")
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="back_profile")
         ]
     ])
     return keyboard
@@ -452,7 +456,7 @@ async def fill_profile_start(message: types.Message, state: FSMContext):
     if existing_profile and existing_profile.get('name'):  # Check if profile is actually filled
         language = existing_profile.get('language', language)  # Use profile language if available
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=get_message("btn_update_profile", language), callback_data="update_profile")],
+            [InlineKeyboardButton(text=get_message("btn_update_profile", language), callback_data="fill_again")],
             [InlineKeyboardButton(text=get_message("btn_cancel", language), callback_data="cancel_profile")]
         ])
         photo_text = f"\n📸 Фото: {'Есть' if existing_profile['photo_id'] else 'Нет'}" if existing_profile.get('photo_id') else ""
@@ -476,6 +480,45 @@ async def fill_profile_start(message: types.Message, state: FSMContext):
         parse_mode='HTML'
     )
     await state.set_state(RegistrationStates.waiting_for_name)
+
+@router.message(ProfileStates.name)
+async def process_profile_name(message: types.Message, state: FSMContext):
+    """Process profile name input for new profile creation"""
+    try:
+        user_id = message.from_user.id
+        logging.info(f"process_profile_name called for user {user_id}")
+        
+        # Get language from state first, then database
+        lang = await get_lang(user_id, state)
+        logging.info(f"Language for {user_id}: {lang}")
+        
+        # Validate input
+        if not message.text or not message.text.strip():
+            await message.answer(get_message("profile_name_error", lang), parse_mode='HTML')
+            return
+            
+        if len(message.text.strip()) < 2:
+            await message.answer(get_message("profile_name_error", lang), parse_mode='HTML')
+            return
+        
+        # Save name to state
+        await state.update_data(name=message.text.strip())
+        logging.info(f"DEBUG: User {user_id} saved name: '{message.text.strip()}'")
+        
+        # Ask for age
+        await message.answer(
+            get_message("profile_age_prompt", lang),
+            parse_mode='HTML'
+        )
+        
+        # Set next state
+        await state.set_state(ProfileStates.age)
+        logging.info(f"DEBUG: User {user_id} moved to age state")
+        
+    except Exception as e:
+        logging.error(f"Error in process_profile_name: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
 
 @router.message(RegistrationStates.waiting_for_name)
 async def process_name(message: types.Message, state: FSMContext):
@@ -1251,6 +1294,87 @@ async def find_company_start(message: types.Message, state: FSMContext):
             reply_markup=get_main_keyboard(lang),
             parse_mode='HTML'
         )
+
+async def send_profile_with_photo(message, profile, user_id, state):
+    """Send profile with photo and swipe keyboard"""
+    try:
+        lang = await get_lang(user_id, state)
+        
+        # Update user activity
+        from notification_system import get_notification_system
+        notification_system = get_notification_system(message.bot)
+        await notification_system.update_user_activity(user_id)
+        
+        # Format profile text
+        profile_text = f"👤 {profile['name']}, {profile['age']}\n🏙️ {profile['city'].title()}\n🍺 {profile['favorite_drink']}"
+        
+        # Send with photo if available
+        if profile.get('photo_id'):
+            await message.answer_photo(
+                photo=profile['photo_id'],
+                caption=profile_text,
+                reply_markup=get_swipe_keyboard(lang),
+                parse_mode='HTML'
+            )
+        else:
+            await message.answer(
+                get_message("no_photo", lang) + f"\n\n{profile_text}",
+                reply_markup=get_swipe_keyboard(lang),
+                parse_mode='HTML'
+            )
+        
+        logging.info(f"DEBUG: Profile sent to user {user_id}")
+        
+    except Exception as e:
+        logging.error(f"Error in send_profile_with_photo: {e}")
+        lang = await get_lang(user_id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.callback_query(F.data == "back_profile")
+async def handle_back_profile(callback: types.CallbackQuery, state: FSMContext):
+    """Handle back button in swipe - go to previous profile or main menu"""
+    try:
+        await callback.answer()
+        user_id = callback.from_user.id
+        
+        # Get current state data
+        data = await state.get_data()
+        profiles = data.get('profiles', [])
+        current_index = data.get('current_index', 0)
+        
+        logging.info(f"DEBUG: Back button pressed. Current index: {current_index}, Total profiles: {len(profiles)}")
+        
+        # Check if we can go back
+        if current_index > 0 and len(profiles) > 1:
+            # Move to previous profile
+            new_index = current_index - 1
+            await state.update_data(current_index=new_index)
+            
+            # Get previous profile
+            prev_profile = profiles[new_index]
+            logging.info(f"DEBUG: Moving back to profile {new_index}: {prev_profile.get('name')}")
+            
+            # Send previous profile
+            await send_profile_with_photo(callback.message, prev_profile, user_id, state)
+            
+        else:
+            # At first profile or no profiles - return to main menu
+            logging.info(f"DEBUG: At first profile or no profiles, returning to main menu")
+            
+            lang = get_user_language(user_id)
+            await callback.message.answer(
+                "Возвращаемся в главное меню...",
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            
+            # Clear state
+            await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Error in handle_back_profile: {e}")
+        lang = get_user_language(callback.from_user.id)
+        await callback.answer("Ошибка при возврате")
 
 @router.callback_query(F.data.in_(["like", "dislike"]), SwipeStates.swiping)
 async def handle_swipe_action(callback: types.CallbackQuery, state: FSMContext):
@@ -3036,19 +3160,318 @@ async def process_edit_photo_separate(message: types.Message, state: FSMContext)
         lang = await get_lang(message.from_user.id, state)
         await message.answer(get_message("error", lang), parse_mode='HTML')
 
-@router.callback_query(F.data == "update_profile")
-async def update_profile_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Handle profile update button"""
+@router.message(ProfileStates.age)
+async def process_profile_age(message: types.Message, state: FSMContext):
+    """Process profile age input"""
+    try:
+        user_id = message.from_user.id
+        
+        # Validate age
+        try:
+            age = int(message.text.strip())
+            if age < 16 or age > 100:
+                lang = await get_lang(user_id, state)
+                await message.answer(get_message("profile_age_error", lang), parse_mode='HTML')
+                return
+        except ValueError:
+            lang = await get_lang(user_id, state)
+            await message.answer(get_message("profile_age_error", lang), parse_mode='HTML')
+            return
+        
+        # Save age to state
+        await state.update_data(age=age)
+        logging.info(f"DEBUG: User {user_id} saved age: {age}")
+        
+        # Ask for city
+        lang = await get_lang(user_id, state)
+        await message.answer(
+            get_message("profile_city_prompt", lang),
+            parse_mode='HTML'
+        )
+        
+        # Set next state
+        await state.set_state(ProfileStates.city)
+        logging.info(f"DEBUG: User {user_id} moved to city state")
+        
+    except Exception as e:
+        logging.error(f"Error in process_profile_age: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.message(ProfileStates.city)
+async def process_profile_city(message: types.Message, state: FSMContext):
+    """Process profile city input"""
+    try:
+        user_id = message.from_user.id
+        
+        if not message.text or not message.text.strip():
+            lang = await get_lang(user_id, state)
+            await message.answer(get_message("profile_city_error", lang), parse_mode='HTML')
+            return
+        
+        # Save city to state
+        await state.update_data(city=message.text.strip())
+        logging.info(f"DEBUG: User {user_id} saved city: '{message.text.strip()}'")
+        
+        # Ask for favorite drink
+        lang = await get_lang(user_id, state)
+        await message.answer(
+            get_message("profile_drink_prompt", lang),
+            parse_mode='HTML'
+        )
+        
+        # Set next state
+        await state.set_state(ProfileStates.favorite_drink)
+        logging.info(f"DEBUG: User {user_id} moved to favorite_drink state")
+        
+    except Exception as e:
+        logging.error(f"Error in process_profile_city: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.message(ProfileStates.favorite_drink)
+async def process_profile_favorite_drink(message: types.Message, state: FSMContext):
+    """Process profile favorite drink input"""
+    try:
+        user_id = message.from_user.id
+        
+        if not message.text or not message.text.strip():
+            lang = await get_lang(user_id, state)
+            await message.answer(get_message("profile_drink_error", lang), parse_mode='HTML')
+            return
+        
+        # Save favorite drink to state
+        await state.update_data(favorite_drink=message.text.strip())
+        logging.info(f"DEBUG: User {user_id} saved favorite drink: '{message.text.strip()}'")
+        
+        # Ask for gender instead of who_pays
+        lang = await get_lang(user_id, state)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👨 Мужчина", callback_data="profile_gender_male")],
+            [InlineKeyboardButton(text="👩 Женщина", callback_data="profile_gender_female")],
+            [InlineKeyboardButton(text="🧪 Другой", callback_data="profile_gender_other")]
+        ])
+        await message.answer(
+            "Укажите ваш пол:",
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        
+        # Set next state to gender
+        await state.set_state(ProfileStates.gender)
+        logging.info(f"DEBUG: User {user_id} moved to gender state")
+        
+    except Exception as e:
+        logging.error(f"Error in process_profile_favorite_drink: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.callback_query(F.data.startswith("profile_gender_"))
+async def process_profile_gender(callback: types.CallbackQuery, state: FSMContext):
+    """Process profile gender selection"""
     try:
         await callback.answer()
-        lang = get_user_language(callback.from_user.id)
+        user_id = callback.from_user.id
+        
+        # Extract gender value
+        gender = callback.data.split("_")[2]
+        
+        # Save to state
+        await state.update_data(gender=gender)
+        logging.info(f"DEBUG: User {user_id} saved gender: {gender}")
+        
+        # Get current state to determine next step
+        current_state = await state.get_state()
+        
+        if current_state == ProfileStates.photo:
+            # User was in photo state, now we can save the profile
+            data = await state.get_data()
+            
+            # Save to database with all required parameters
+            success = db.create_profile(
+                user_id=user_id,
+                name=data['name'],
+                age=data['age'],
+                gender=data['gender'],
+                city=data['city'],
+                favorite_drink=data['favorite_drink'],
+                who_pays=data['who_pays'],
+                photo_id=data['photo_id']
+            )
+            
+            if success:
+                lang = await get_lang(user_id, state)
+                await callback.message.answer(
+                    get_message("profile_saved", lang),
+                    reply_markup=get_main_keyboard(lang),
+                    parse_mode='HTML'
+                )
+                
+                logging.info(f"DEBUG: User {user_id} successfully created profile after gender")
+                
+                # Clear state
+                await state.clear()
+            else:
+                lang = await get_lang(user_id, state)
+                await callback.message.answer(get_message("error", lang), parse_mode='HTML')
+        else:
+            # Normal flow - ask for who pays
+            lang = await get_lang(user_id, state)
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=get_message("who_pays_i_treat", lang), callback_data="profile_who_pays_i_treat")],
+                [InlineKeyboardButton(text=get_message("who_pays_someone_treats", lang), callback_data="profile_who_pays_someone_treats")],
+                [InlineKeyboardButton(text=get_message("who_pays_each_self", lang), callback_data="profile_who_pays_each_self")]
+            ])
+            await callback.message.answer(
+                get_message("profile_who_pays_prompt", lang),
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+            
+            # Set next state
+            await state.set_state(ProfileStates.who_pays)
+            logging.info(f"DEBUG: User {user_id} moved to who_pays state")
+        
+    except Exception as e:
+        logging.error(f"Error in process_profile_gender: {e}")
+        lang = await get_lang(callback.from_user.id, state)
+        await callback.answer(get_message("error", lang))
+
+@router.callback_query(F.data.startswith("profile_who_pays_"))
+async def process_profile_who_pays(callback: types.CallbackQuery, state: FSMContext):
+    """Process profile who pays selection"""
+    try:
+        await callback.answer()
+        user_id = callback.from_user.id
+        
+        # Extract who_pays value - FIXED PARSING
+        who_pays = "_".join(callback.data.split("_")[3:])
+        
+        # Save to state
+        await state.update_data(who_pays=who_pays)
+        logging.info(f"DEBUG: User {user_id} saved who_pays: {who_pays}")
+        
+        # Ask for photo
+        lang = await get_lang(user_id, state)
         await callback.message.answer(
-            get_message("profile_updated", lang),
-            reply_markup=get_main_keyboard(lang),
+            get_message("profile_photo_prompt", lang),
+            parse_mode='HTML'
+        )
+        
+        # Set next state
+        await state.set_state(ProfileStates.photo)
+        logging.info(f"DEBUG: User {user_id} moved to photo state")
+        
+    except Exception as e:
+        logging.error(f"Error in process_profile_who_pays: {e}")
+        lang = await get_lang(callback.from_user.id, state)
+        await callback.answer(get_message("error", lang))
+
+@router.message(ProfileStates.photo, F.photo)
+async def process_profile_photo(message: types.Message, state: FSMContext):
+    """Process profile photo input and save complete profile"""
+    try:
+        user_id = message.from_user.id
+        
+        # Save photo to state
+        photo_id = message.photo[-1].file_id
+        await state.update_data(photo_id=photo_id)
+        logging.info(f"DEBUG: User {user_id} saved photo: {photo_id}")
+        
+        # Get all profile data
+        data = await state.get_data()
+        
+        # Check if gender exists (fix for users who started before gender was added)
+        if 'gender' not in data:
+            logging.warning(f"DEBUG: User {user_id} missing gender, asking for it now")
+            
+            # Ask for gender
+            lang = await get_lang(user_id, state)
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👨 Мужчина", callback_data="profile_gender_male")],
+                [InlineKeyboardButton(text="👩 Женщина", callback_data="profile_gender_female")],
+                [InlineKeyboardButton(text="🧪 Другой", callback_data="profile_gender_other")]
+            ])
+            await message.answer(
+                "Укажите ваш пол (этот шаг был добавлен недавно):",
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+            
+            # Stay in photo state (we have photo, just need gender)
+            logging.info(f"DEBUG: User {user_id} needs to provide gender")
+            return
+        
+        # Save to database with all required parameters
+        success = db.create_profile(
+            user_id=user_id,
+            name=data['name'],
+            age=data['age'],
+            gender=data['gender'],  # Now we have gender!
+            city=data['city'],
+            favorite_drink=data['favorite_drink'],
+            who_pays=data['who_pays'],
+            photo_id=photo_id
+        )
+        
+        if success:
+            lang = await get_lang(user_id, state)
+            await message.answer(
+                get_message("profile_saved", lang),
+                reply_markup=get_main_keyboard(lang),
+                parse_mode='HTML'
+            )
+            
+            logging.info(f"DEBUG: User {user_id} successfully created profile")
+            
+            # Clear state
+            await state.clear()
+        else:
+            lang = await get_lang(user_id, state)
+            await message.answer(get_message("error", lang), parse_mode='HTML')
+        
+    except Exception as e:
+        logging.error(f"Error in process_profile_photo: {e}")
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(get_message("error", lang), parse_mode='HTML')
+
+@router.message(ProfileStates.photo)
+async def process_profile_photo_text(message: types.Message, state: FSMContext):
+    """Handle text input when photo expected"""
+    try:
+        lang = await get_lang(message.from_user.id, state)
+        await message.answer(
+            get_message("profile_photo_error", lang),
             parse_mode='HTML'
         )
     except Exception as e:
-        logging.error(f"Error in update_profile_callback: {e}")
+        logging.error(f"Error in process_profile_photo_text: {e}")
+
+@router.callback_query(F.data == "fill_again")
+async def fill_again_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Handle fill again button - restart profile creation"""
+    try:
+        await callback.answer()
+        user_id = callback.from_user.id
+        lang = get_user_language(user_id)
+        
+        # Clear any existing state
+        await state.clear()
+        
+        # Start fresh profile creation
+        await callback.message.answer(
+            "Давайте заполним анкету заново!\n\nВведите ваше имя:",
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode='HTML'
+        )
+        
+        # Set state to name input
+        await state.set_state(ProfileStates.name)
+        
+        logging.info(f"User {user_id} started filling profile again")
+        
+    except Exception as e:
+        logging.error(f"Error in fill_again_callback: {e}")
         lang = get_user_language(callback.from_user.id)
         await callback.answer(get_message("error", lang))
 
@@ -3403,12 +3826,12 @@ async def process_dating_city_input(message: types.Message, state: FSMContext):
             who_pays_filter = None
         
         # Single query with all data for filtering
-        profiles = db.get_profiles_for_swiping_exact_city_all_data(user_id, city_normalized,
+        profiles = db.get_profiles_for_swiping_exact_city(user_id, city_normalized,
                                                              gender_filter=gender_filter,
                                                              who_pays_filter=who_pays_filter)
         
         # For filter checking, use same results without filters
-        profiles_without_filters = db.get_profiles_for_swiping_exact_city_all_data(user_id, city_normalized,
+        profiles_without_filters = db.get_profiles_for_swiping_exact_city(user_id, city_normalized,
                                                                                   gender_filter=None,
                                                                                   who_pays_filter=None)
         

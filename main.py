@@ -1,14 +1,19 @@
 import asyncio
 import logging
 import os
+import sys
 from dotenv import load_dotenv
-from datetime import datetime
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+import sqlite3
+from datetime import datetime
+import random
 
 from handlers.start import router
+from rotation_check import check_daily_rotation
+from notification_system import get_notification_system
 
 # Load environment variables
 load_dotenv()
@@ -132,6 +137,15 @@ async def main():
         dp.include_router(router)  # Registration router must be first
         
         logger.info("📋 Registration router included FIRST")
+        
+        # Check daily bot rotation
+        await check_daily_rotation()
+        
+        # Initialize and start notification system
+        notification_system = get_notification_system(bot)
+        asyncio.create_task(notification_system.start_notification_scheduler())
+        logger.info("📬 Notification system started")
+        
         logger.info("🚀 Starting bot...")
         
         # Start polling

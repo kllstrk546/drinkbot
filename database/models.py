@@ -3,6 +3,7 @@ import os
 import random
 import logging
 from typing import Optional, List, Dict, Any
+from datetime import datetime
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from helpers.city_normalizer import normalize_city_name, smart_city_to_english
@@ -1685,11 +1686,57 @@ class Database:
             return []
 
     def get_profiles_for_swiping_exact_city(self, user_id: int, city_normalized: str, gender_filter: str = None, who_pays_filter: str = None) -> List[Dict[str, Any]]:
-        """Get profiles for swiping in exact city only with filters"""
+        """Get profiles for swiping in exact city only with daily limits"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
+                
+                # Check daily limits first
+                today = datetime.now().strftime('%Y-%m-%d')
+                
+                # Get city limit
+                city_limits = {
+                    "Kyiv": 15, "Moscow": 15, "Saint Petersburg": 12, "Minsk": 12,
+                    "Novosibirsk": 10, "Yekaterinburg": 10, "Tashkent": 10, "Kazan": 10,
+                    "Kharkiv": 10, "Nizhny Novgorod": 10, "Chelyabinsk": 10, "Almaty": 10,
+                    "Samara": 10, "Ufa": 10, "Rostov-on-Don": 10, "Krasnoyarsk": 10,
+                    "Omsk": 10, "Voronezh": 10, "Perm": 10, "Volgograd": 10,
+                    "Odesa": 8, "Krasnodar": 8, "Dnipro": 8, "Saratov": 8, "Donetsk": 8,
+                    "Tyumen": 8, "Tolyatti": 8, "Lviv": 8, "Zaporizhzhia": 8, "Izhevsk": 8,
+                    "Barnaul": 8, "Ulyanovsk": 8, "Irkutsk": 8, "Khabarovsk": 8, "Makhachkala": 8,
+                    "Vladivostok": 8, "Yaroslavl": 8, "Orenburg": 8, "Tomsk": 8, "Kemerovo": 8,
+                    "Ryazan": 8, "Naberezhnye Chelny": 8, "Astana": 8, "Penza": 8, "Kirov": 8,
+                    "Lipetsk": 8, "Cheboksary": 8, "Balashikha": 8, "Mykolaiv": 8,
+                    "default": 5
+                }
+                
+                daily_limit = city_limits.get(city_normalized, city_limits["default"])
+                
+                # Check current daily usage
+                cursor.execute('''
+                    SELECT bots_shown FROM daily_bot_limits 
+                    WHERE user_id = ? AND city_normalized = ? AND date = ?
+                ''', (user_id, city_normalized, today))
+                
+                result = cursor.fetchone()
+                
+                if result:
+                    bots_shown = result[0]
+                    if bots_shown >= daily_limit:
+                        logging.info(f"User {user_id} reached daily limit of {daily_limit} bots in {city_normalized}")
+                        return []  # No more bots today
+                    remaining_limit = daily_limit - bots_shown
+                else:
+                    # Create new daily limit record
+                    cursor.execute('''
+                        INSERT INTO daily_bot_limits (user_id, city_normalized, date, daily_limit)
+                        VALUES (?, ?, ?, ?)
+                    ''', (user_id, city_normalized, today, daily_limit))
+                    remaining_limit = daily_limit
+                
+                # Adjust query limit to remaining bots
+                actual_limit = min(10, remaining_limit)
                 
                 # Build WHERE conditions for exact city only
                 conditions = [
@@ -1725,21 +1772,127 @@ class Database:
                     AND dbo.city_normalized = ?
                     AND dbo.date = DATE('now')
                     ORDER BY dbo.order_index
-                    LIMIT 10
+                    LIMIT ?
                 '''
                 
-                params.append(city_normalized)
+                params.extend([city_normalized, actual_limit])
                 
                 cursor.execute(query, params)
                 results = cursor.fetchall()
                 profiles = [dict(row) for row in results]
                 
-                logging.info(f"DEBUG: Found {len(profiles)} profiles for user {user_id} in exact city '{city_normalized}' with filters")
+                logging.info(f"DEBUG: Found {len(profiles)} profiles for user {user_id} in exact city '{city_normalized}' with filters (limit: {actual_limit})")
                 return profiles
                 
         except sqlite3.Error as e:
             logging.error(f"Error getting profiles by exact city with filters: {e}")
             return []
+
+    def increment_daily_bot_count(self, user_id: int, city_normalized: str) -> bool:
+        """Increment daily bot counter for user"""
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Update or insert daily limit record
+                cursor.execute('''
+                    UPDATE daily_bot_limits 
+                    SET bots_shown = bots_shown + 1
+                    WHERE user_id = ? AND city_normalized = ? AND date = ?
+                ''', (user_id, city_normalized, today))
+                
+                if cursor.rowcount == 0:
+                    # Create new record if doesn't exist
+                    city_limits = {
+                        "Kyiv": 15, "Moscow": 15, "Saint Petersburg": 12, "Minsk": 12,
+                        "Novosibirsk": 10, "Yekaterinburg": 10, "Tashkent": 10, "Kazan": 10,
+                        "Kharkiv": 10, "Nizhny Novgorod": 10, "Chelyabinsk": 10, "Almaty": 10,
+                        "Samara": 10, "Ufa": 10, "Rostov-on-Don": 10, "Krasnoyarsk": 10,
+                        "Omsk": 10, "Voronezh": 10, "Perm": 10, "Volgograd": 10,
+                        "Odesa": 8, "Krasnodar": 8, "Dnipro": 8, "Saratov": 8, "Donetsk": 8,
+                        "Tyumen": 8, "Tolyatti": 8, "Lviv": 8, "Zaporizhzhia": 8, "Izhevsk": 8,
+                        "Barnaul": 8, "Ulyanovsk": 8, "Irkutsk": 8, "Khabarovsk": 8, "Makhachkala": 8,
+                        "Vladivostok": 8, "Yaroslavl": 8, "Orenburg": 8, "Tomsk": 8, "Kemerovo": 8,
+                        "Ryazan": 8, "Naberezhnye Chelny": 8, "Astana": 8, "Penza": 8, "Kirov": 8,
+                        "Lipetsk": 8, "Cheboksary": 8, "Balashikha": 8, "Mykolaiv": 8,
+                        "default": 5
+                    }
+                    
+                    daily_limit = city_limits.get(city_normalized, city_limits["default"])
+                    
+                    cursor.execute('''
+                        INSERT INTO daily_bot_limits (user_id, city_normalized, date, daily_limit, bots_shown)
+                        VALUES (?, ?, ?, ?, 1)
+                    ''', (user_id, city_normalized, today, daily_limit))
+                
+                conn.commit()
+                logging.info(f"Incremented daily bot count for user {user_id} in {city_normalized}")
+                return True
+                
+        except sqlite3.Error as e:
+            logging.error(f"Error incrementing daily bot count: {e}")
+            return False
+
+    def get_daily_bot_status(self, user_id: int, city_normalized: str) -> Dict[str, Any]:
+        """Get daily bot status for user"""
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT bots_shown, daily_limit FROM daily_bot_limits 
+                    WHERE user_id = ? AND city_normalized = ? AND date = ?
+                ''', (user_id, city_normalized, today))
+                
+                result = cursor.fetchone()
+                
+                if result:
+                    bots_shown, daily_limit = result
+                    remaining = max(0, daily_limit - bots_shown)
+                    return {
+                        "shown": bots_shown,
+                        "limit": daily_limit,
+                        "remaining": remaining,
+                        "reached_limit": bots_shown >= daily_limit
+                    }
+                else:
+                    # New user - get default limit
+                    city_limits = {
+                        "Kyiv": 15, "Moscow": 15, "Saint Petersburg": 12, "Minsk": 12,
+                        "Novosibirsk": 10, "Yekaterinburg": 10, "Tashkent": 10, "Kazan": 10,
+                        "Kharkiv": 10, "Nizhny Novgorod": 10, "Chelyabinsk": 10, "Almaty": 10,
+                        "Samara": 10, "Ufa": 10, "Rostov-on-Don": 10, "Krasnoyarsk": 10,
+                        "Omsk": 10, "Voronezh": 10, "Perm": 10, "Volgograd": 10,
+                        "Odesa": 8, "Krasnodar": 8, "Dnipro": 8, "Saratov": 8, "Donetsk": 8,
+                        "Tyumen": 8, "Tolyatti": 8, "Lviv": 8, "Zaporizhzhia": 8, "Izhevsk": 8,
+                        "Barnaul": 8, "Ulyanovsk": 8, "Irkutsk": 8, "Khabarovsk": 8, "Makhachkala": 8,
+                        "Vladivostok": 8, "Yaroslavl": 8, "Orenburg": 8, "Tomsk": 8, "Kemerovo": 8,
+                        "Ryazan": 8, "Naberezhnye Chelny": 8, "Astana": 8, "Penza": 8, "Kirov": 8,
+                        "Lipetsk": 8, "Cheboksary": 8, "Balashikha": 8, "Mykolaiv": 8,
+                        "default": 5
+                    }
+                    
+                    daily_limit = city_limits.get(city_normalized, city_limits["default"])
+                    
+                    return {
+                        "shown": 0,
+                        "limit": daily_limit,
+                        "remaining": daily_limit,
+                        "reached_limit": False
+                    }
+                
+        except sqlite3.Error as e:
+            logging.error(f"Error getting daily bot status: {e}")
+            return {
+                "shown": 0,
+                "limit": 5,
+                "remaining": 5,
+                "reached_limit": False
+            }
 
     def get_profiles_for_swiping_with_filters(self, user_id: int, city_normalized: str = None, gender_filter: str = None, who_pays_filter: str = None) -> List[Dict[str, Any]]:
         """Get profiles for swiping with premium filters applied"""

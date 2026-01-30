@@ -1,0 +1,32 @@
+# Database files
+drink_bot.db
+*.db-journal
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# Logs
+logs/
+
+# Backup files
+backups/
+daily_bot_rotation.py
+emergency_bot_activation.py
+debug_*.py
+fix_*.py
+test_*.py
+implement_*.py
+notification_system.py
+rotation_check.py
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
